@@ -6,6 +6,17 @@ module;
 
 module brb;
 
+template <typename F>
+class defer {
+public:
+    defer(F fn)
+        : fn(std::move(fn)) {}
+    F fn;
+    ~defer() {
+        fn();
+    }
+};
+
 auto brb::Router::handle(std::shared_ptr<tcp_stream> stream) const -> awaitable<bool> {
     Context ctx;
     ctx.stream = stream;
@@ -26,8 +37,7 @@ auto brb::Router::handle(std::shared_ptr<tcp_stream> stream) const -> awaitable<
         std::unique_lock<std::mutex> lock(_mtx);
         _tcp_streams.push_back(stream);
     };
-    // cpx::defer _ = [&]() {
-    {
+    defer _ = [&]() {
         std::unique_lock<std::mutex> lock(_mtx);
         std::remove_if(_tcp_streams.begin(), _tcp_streams.end(), [&](auto &s) { return s.get() == stream.get(); });
     };
