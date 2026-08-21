@@ -1,0 +1,10 @@
+#:schema https://raw.githubusercontent.com/aufam/carton/main/carton-schema.json
+
+[package]
+edition = 20
+version = "0.1.0"
+name = "brb"
+
+[dependencies]
+boost = { version = "1.92.0", features = ["url"] }
+xxhash = { version = "0.8.3" }
