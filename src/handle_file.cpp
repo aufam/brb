@@ -36,7 +36,6 @@ auto brb::Router::handle_file(Context &ctx, const std::string &path) const -> Ha
         return [etag](Context &c) -> awaitable<void> {
             auto &res = c.response_empty();
             res.set(http::field::etag, etag);
-            res.set(http::field::cache_control, "no-cache");
             res.result(http::status::not_modified);
             res.prepare_payload();
             co_await http::async_write(*c.stream, res);
@@ -50,7 +49,7 @@ auto brb::Router::handle_file(Context &ctx, const std::string &path) const -> Ha
             throw boost::system::system_error(ec);
 
         res.set(http::field::etag, etag);
-        res.set(http::field::cache_control, "no-cache");
+        res.set(http::field::content_type, mime);
         res.result(http::status::ok);
         res.prepare_payload();
         co_await http::async_write(*c.stream, res);

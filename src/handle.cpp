@@ -29,7 +29,7 @@ auto brb::Router::handle(std::shared_ptr<tcp_stream> stream) const -> awaitable<
         auto &res = ctx.response_empty();
         res.result(http::status::bad_request);
         co_await http::async_write(*stream, res);
-        co_return res.keep_alive();
+        co_return std::visit([](auto &res) { return res.keep_alive(); }, ctx.r);
     }
     ctx.url = *url;
 
@@ -39,7 +39,8 @@ auto brb::Router::handle(std::shared_ptr<tcp_stream> stream) const -> awaitable<
     };
     defer _ = [&]() {
         std::unique_lock<std::mutex> lock(_mtx);
-        std::remove_if(_tcp_streams.begin(), _tcp_streams.end(), [&](auto &s) { return s.get() == stream.get(); });
+        auto it = std::remove_if(_tcp_streams.begin(), _tcp_streams.end(), [&](auto &s) { return s == stream; });
+        _tcp_streams.erase(it, _tcp_streams.end());
     };
 
     match(ctx);
