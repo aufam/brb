@@ -23,22 +23,27 @@ std::pair<std::string, bool> match_filepath(const std::string &root_uri, const s
     if (ec)
         return {};
 
-    if (auto rel = path.lexically_relative(root); rel.empty() || rel.native().starts_with(".."))
+    if (auto rel = path.lexically_relative(root); rel.empty() || rel == ".." || rel.native().starts_with("../"))
         return {};
 
-    if (fs::is_directory(path, ec)) {
-        if (!uri.ends_with('/'))
+    const bool is_dir = fs::is_directory(path, ec);
+    if (!ec && is_dir) {
+        if (uri.ends_with('/'))
+            path /= "index.html";
+        else
             return {uri + '/', true}; // redirect to uri + /
-
-        path /= "index.html";
-    } else if (ec) {
-        return {};
     }
 
-    if (!fs::is_regular_file(path, ec) || ec)
-        return {};
+    for (int i = 0; i < 2; ++i) {
+        std::error_code ec;
+        const bool      exists = fs::is_regular_file(path, ec);
+        if (!ec && exists)
+            return {path.string(), false};
 
-    return {path.string(), false};
+        path = path.string() + ".html";
+    }
+
+    return {};
 }
 
 void brb::Router::match(Context &ctx) const {
@@ -46,6 +51,7 @@ void brb::Router::match(Context &ctx) const {
     const auto &url_path = ctx.url.path();
 
     std::scoped_lock<std::mutex> lock(_mtx);
+
     ctx.handlers.reserve(middlewares.size() + 1);
     for (const auto &[path, fn] : middlewares) {
         if (url_path.starts_with(path))
