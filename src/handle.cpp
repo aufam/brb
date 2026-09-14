@@ -17,11 +17,12 @@ public:
     }
 };
 
-auto brb::Router::handle(std::shared_ptr<tcp_stream> stream) const -> awaitable<bool> {
+auto brb::Router::handle(std::shared_ptr<tcp_stream> stream, boost::optional<uint64_t> body_limit) const -> awaitable<bool> {
     Context ctx;
     ctx.stream = stream;
 
     auto &parser = ctx.parser_empty();
+    parser.body_limit(body_limit);
     co_await http::async_read_header(*stream, ctx.buffer, parser);
 
     const auto url = urls::parse_origin_form(parser.get().target());

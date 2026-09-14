@@ -62,7 +62,7 @@ struct brb::Router {
 
     /// handle a TCP connection
     /// @return keep alive
-    awaitable<bool> handle(std::shared_ptr<tcp_stream>) const;
+    awaitable<bool> handle(std::shared_ptr<tcp_stream>, boost::optional<uint64_t> body_limit = {}) const;
 
     /// close currently active TCP connections
     void close_all_streams() const {
