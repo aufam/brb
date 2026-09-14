@@ -5,6 +5,12 @@ edition = 20
 version = "0.1.0"
 name = "brb"
 
+[[bin]]
+name = "main"
+path = "src/main.cpp"
+required-features = ["cpx"]
+
 [dependencies]
 boost = { version = "1.92.0", features = ["url"] }
 xxhash = { version = "0.8.3" }
+cpx = { version = "0.1.0", features = ["cli", "fmt"], optional = true }
