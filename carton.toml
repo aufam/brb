@@ -8,9 +8,31 @@ name = "brb"
 [[bin]]
 name = "main"
 path = "src/main.cpp"
-required-features = ["cpx"]
+required-features = ["cpx", "gzip", "brotli", "zstd"]
 
 [dependencies]
 boost = { version = "1.92.0", features = ["url"] }
-xxhash = { version = "0.8.3" }
+xxhash = "0.8.3"
+
+zlib = { version = "1.3.2", optional = true }
 cpx = { version = "0.1.0", features = ["cli", "fmt"], optional = true }
+
+gzip = {
+    mod = ["src/middlewares/gzip/lib.cppm"],
+    src = ["src/middlewares/gzip/*.cpp"],
+    features = ["zlib"],
+    optional = true
+}
+brotli = {
+    version = "1.2.0",
+    mod = ["src/middlewares/brotli/lib.cppm"],
+    src = ["src/middlewares/brotli/*.cpp"],
+    optional = true
+}
+zstd = {
+    version = "1.5.7",
+    mod = ["src/middlewares/zstd/lib.cppm"],
+    src = ["src/middlewares/zstd/*.cpp"],
+    optional = true
+}
+# cors = { mod = ["src/middlewares/cors/lib.cppm"], src = ["src/middlewares/cors/*.cpp"], optional = true }
