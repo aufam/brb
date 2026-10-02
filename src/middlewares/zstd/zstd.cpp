@@ -52,7 +52,7 @@ void brb::zstd::decompress(std::string &body) {
     body = std::move(output);
 }
 
-brb::awaitable<void> brb::middlewares::zstd(Context &c) {
+brb::awaitable<void> brb::middlewares::zstd::operator()(Context &c) const {
     if (c.is_encoded("zstd")) {
         auto &parser = c.parser_string();
         if (!parser.is_done())
@@ -72,11 +72,11 @@ brb::awaitable<void> brb::middlewares::zstd(Context &c) {
     auto &res = c.response_string();
 
     // Avoid wasting CPU/memory for tiny responses.
-    if (res.body().size() < 512)
+    if (res.body().size() < min_size)
         co_return;
 
     brb::zstd::compress(res.body());
 
     res.set(http::field::content_encoding, "zstd");
-    res.set(http::field::vary, "Accept-Encoding");
+    c.append_vary(http::field::accept_encoding);
 }

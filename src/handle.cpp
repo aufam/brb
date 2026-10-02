@@ -6,17 +6,6 @@ module;
 
 module brb;
 
-template <typename F>
-class defer {
-public:
-    defer(F fn)
-        : fn(std::move(fn)) {}
-    F fn;
-    ~defer() {
-        fn();
-    }
-};
-
 static std::string get_multipart_boundary(std::string_view);
 
 auto brb::Router::handle(std::shared_ptr<tcp_stream> stream, boost::optional<uint64_t> body_limit) const -> awaitable<bool> {
@@ -26,7 +15,11 @@ auto brb::Router::handle(std::shared_ptr<tcp_stream> stream, boost::optional<uin
     auto &req    = parser.get().base();
 
     parser.body_limit(body_limit);
-    co_await http::async_read_header(*stream, ctx.buffer, parser);
+    try {
+        co_await http::async_read_header(*stream, ctx.buffer, parser);
+    } catch (boost::system::system_error &e) {
+        std::ignore = e;
+    }
 
     ctx.multipart_boundary = get_multipart_boundary(req[brb::http::field::content_type]);
 
@@ -36,7 +29,11 @@ auto brb::Router::handle(std::shared_ptr<tcp_stream> stream, boost::optional<uin
     const auto url = urls::parse_origin_form(req.target());
     if (!url) {
         res.result(http::status::bad_request);
-        co_await http::async_write(*stream, res);
+        try {
+            co_await http::async_write(*stream, res);
+        } catch (boost::system::system_error &e) {
+            std::ignore = e;
+        }
         co_return std::visit([](auto &res) { return res.keep_alive(); }, ctx.r);
     }
     ctx.url = *url;
@@ -52,7 +49,12 @@ auto brb::Router::handle(std::shared_ptr<tcp_stream> stream, boost::optional<uin
     };
 
     match(ctx);
-    co_await ctx.next();
+    try {
+        co_await ctx.next();
+        co_await ctx.write_response();
+    } catch (boost::system::system_error &e) {
+        std::ignore = e;
+    }
     co_return std::visit([](auto &res) { return res.keep_alive(); }, ctx.r);
 }
 

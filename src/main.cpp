@@ -3,6 +3,7 @@
 
 import brb;
 import brb.gzip;
+import brb.static_files;
 import fmt;
 import cpx;
 import cpx.cli11;
@@ -29,25 +30,14 @@ int main(int argc, char **argv) {
     brb::Router                    router;
     std::atomic_bool               is_running{true};
 
-    try {
-        const auto address  = boost::asio::ip::make_address(args.host);
-        const auto endpoint = boost::asio::ip::tcp::endpoint(address, args.port);
-
-        acceptor.open(endpoint.protocol());
-        acceptor.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
-        acceptor.bind(endpoint);
-        acceptor.listen(boost::asio::socket_base::max_listen_connections);
-    } catch (boost::system::system_error &e) {
-        fmt::println(stderr, "Failed to start server {}:{}: {}", args.host, args.port, e.code().message());
-        exit(1);
-    }
-
-    router.mount("/", args.directory);
-
+    static int cnt = 0;
     router.use("/", [](brb::Context &c) -> boost::asio::awaitable<void> {
         const auto  ep  = c.stream->socket().remote_endpoint();
         const auto &req = c.req();
         fmt::println("[{}:{}] {} {}", ep.address().to_string(), ep.port(), req.method_string(), req.target());
+
+        if (cnt++ == 20)
+            exit(1);
 
         try {
             co_await c.next();
@@ -60,7 +50,24 @@ int main(int argc, char **argv) {
         fmt::println("[{}:{}] {} {}", ep.address().to_string(), ep.port(), (int)res.result(), res.reason());
     });
 
-    router.use("/api/", brb::middlewares::string_body, brb::middlewares::gzip);
+    const auto response_writer = brb::middlewares::response_writer{};
+
+    const auto static_files = brb::middlewares::static_files{
+        .dir               = args.directory,
+        .spa               = true,
+        .directory_listing = true,
+        .dotfiles          = true,
+    };
+
+    router.use("/", response_writer, static_files);
+
+    const auto request_reader = brb::middlewares::request_reader{
+        .string_body = true,
+    };
+
+    const auto gzip = brb::middlewares::gzip{};
+
+    router.use("/api/", request_reader, gzip);
 
     router.route("GET /api/products", [](brb::Context &c) -> brb::awaitable<void> {
         auto &body = c.response_string().body();
@@ -141,6 +148,19 @@ int main(int argc, char **argv) {
 
         router.close_all_streams();
     };
+
+    try {
+        const auto address  = boost::asio::ip::make_address(args.host);
+        const auto endpoint = boost::asio::ip::tcp::endpoint(address, args.port);
+
+        acceptor.open(endpoint.protocol());
+        acceptor.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
+        acceptor.bind(endpoint);
+        acceptor.listen(boost::asio::socket_base::max_listen_connections);
+    } catch (boost::system::system_error &e) {
+        fmt::println(stderr, "Failed to start server {}:{}: {}", args.host, args.port, e.code().message());
+        exit(1);
+    }
 
     boost::asio::co_spawn(io, async_main(), boost::asio::detached);
     boost::asio::co_spawn(io, async_cancel(), boost::asio::detached);

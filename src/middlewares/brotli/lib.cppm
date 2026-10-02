@@ -19,5 +19,9 @@ export namespace brb::middlewares {
     /// If the request body is br-encoded, the request parser is converted
     /// to `string_body`. Likewise, if the client accepts br, the response
     /// body is converted to `string_body` before compression.
-    awaitable<void> brotli(Context &c);
+    struct brotli {
+        size_t min_size = 512;
+
+        awaitable<void> operator()(Context &) const;
+    };
 } // namespace brb::middlewares

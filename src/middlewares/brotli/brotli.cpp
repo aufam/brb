@@ -36,7 +36,7 @@ void brb::brotli::compress(std::string &body) {
     body = std::move(output);
 }
 
-brb::awaitable<void> brb::middlewares::brotli(Context &c) {
+brb::awaitable<void> brb::middlewares::brotli::operator()(Context &c) const {
     if (c.is_encoded("br")) {
         auto &parser = c.parser_string();
         if (!parser.is_done())
@@ -56,11 +56,11 @@ brb::awaitable<void> brb::middlewares::brotli(Context &c) {
     auto &res = c.response_string();
 
     // Avoid wasting CPU/memory for tiny responses.
-    if (res.body().size() < 512)
+    if (res.body().size() < min_size)
         co_return;
 
     brb::brotli::compress(res.body());
 
     res.set(http::field::content_encoding, "br");
-    res.set(http::field::vary, "Accept-Encoding");
+    c.append_vary(http::field::accept_encoding);
 }

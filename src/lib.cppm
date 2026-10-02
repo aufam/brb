@@ -12,6 +12,7 @@ export namespace brb {
     struct Context;
     struct SSE;
     struct Part;
+    using Handler = std::function<boost::asio::awaitable<void>(Context &)>;
 
     namespace asio  = boost::asio;
     namespace beast = boost::beast;
@@ -42,14 +43,66 @@ export namespace brb {
 } // namespace brb
 
 export namespace brb::middlewares {
-    /// read the request body and write the response body using string bodies.
-    /// handles the associated HTTP I/O.
-    awaitable<void> string_body(Context &);
+    struct request_reader {
+        bool        string_body = false;
+        bool        file_body   = false;
+        bool        temp_file   = false;
+        std::string file_path   = "";
+
+        awaitable<void> operator()(Context &) const;
+    };
+
+    struct response_writer {
+        bool        string_body = false;
+        bool        file_body   = false;
+        bool        temp_file   = false;
+        std::string file_path   = "";
+
+        awaitable<void> operator()(Context &) const;
+    };
+
+    struct require_content_type {
+        std::vector<std::string> content_types;
+        Handler                  on_unsupported = nullptr; ///< 415 if null
+
+        awaitable<void> operator()(Context &) const;
+    };
+
+    struct timeout {
+        std::chrono::steady_clock::duration duration;
+
+        awaitable<void> operator()(Context &) const;
+    };
+
+    struct cors {
+        std::vector<std::string> origins;
+        std::vector<http::verb>  methods;
+        std::vector<http::field> headers;
+
+        bool                 credentials = false;
+        std::chrono::seconds max_age{};
+
+        awaitable<void> operator()(Context &) const;
+
+        bool allowed_origin(std::string_view origin) const {
+            if (std::ranges::find(origins, "*") != origins.end())
+                return true;
+
+            return std::ranges::find(origins, origin) != origins.end();
+        }
+
+        bool allowed_method(http::verb method) const {
+            return std::ranges::find(methods, method) != methods.end();
+        }
+
+        bool allowed_header(std::string_view name) const {
+            auto field = http::string_to_field(name);
+            return field != http::field::unknown && std::ranges::find(headers, field) != headers.end();
+        }
+    };
 } // namespace brb::middlewares
 
 struct brb::Router {
-    using Handler = std::function<awaitable<void>(Context &)>;
-
     /// register an HTTP route handler for the given path
     void route(std::string path, Handler fn) {
         std::unique_lock<std::mutex> lock(_mtx);
@@ -102,8 +155,6 @@ protected:
     void match(Context &) const;
 
     virtual awaitable<void> not_found(Context &c) const;
-    virtual std::string     etag_file(const std::string &path) const;
-    virtual Handler         handle_file(Context &, const std::string &path) const;
 };
 
 struct brb::SSE {
@@ -123,18 +174,31 @@ struct brb::Part {
     static std::string dump_end(const std::string &boundary);
 };
 
+namespace brb {
+    template <typename F>
+    class defer {
+    public:
+        defer(F fn)
+            : fn(std::move(fn)) {}
+        F fn;
+        ~defer() {
+            fn();
+        }
+    };
+}; // namespace brb
+
 struct brb::Context {
     friend Router;
 
     std::shared_ptr<tcp_stream> stream;
-    flat_buffer                 buffer; ///< request buffer
-    URL                         url;    ///< parsed url from request header
-    std::string                 multipart_boundary;
+    flat_buffer                 buffer;             ///< request buffer
+    URL                         url;                ///< parsed url from request header
+    std::string                 multipart_boundary; ///< parsed multipart_boundary
 
     /// set local variable for this context
     template <typename T>
-    void set(std::string_view key, const T &val) {
-        vars[std::string(key)] = val;
+    void set(std::string_view key, T val) {
+        vars[std::string(key)] = std::move(val);
     }
 
     /// get local variable for this context
@@ -147,6 +211,25 @@ struct brb::Context {
     template <typename T>
     T &get(std::string_view key) {
         return std::any_cast<T &>(vars.at(std::string(key)));
+    }
+
+    /// get local variable for this context
+    template <typename T>
+    T get_or(std::string_view key, T default_value) const {
+        if (auto it = vars.find(std::string(key)); it != vars.end()) {
+            return std::any_cast<const T &>(it->second);
+        }
+        return std::move(default_value);
+    }
+
+    /// returns true if the response semantic indicates keep-alive
+    bool keep_alive() const {
+        return std::visit([](auto &res) { return res.keep_alive(); }, r);
+    }
+
+    /// set the keep alive response semantic option
+    void keep_alive(bool v) {
+        std::visit([v](auto &res) { return res.keep_alive(v); }, r);
     }
 
     /// get parsed request header
@@ -169,8 +252,26 @@ struct brb::Context {
 
     /// invoke next handler
     awaitable<void> next() {
-        if (idx < handlers.size())
-            co_await handlers[idx++](*this);
+        if (aborted || idx >= handlers.size())
+            co_return;
+
+        const auto previous_level = level;
+
+        level    = idx;
+        auto  fn = handlers[idx++];
+        defer _  = [&]() { level = previous_level; };
+
+        co_await fn(*this);
+    }
+
+    /// disable `c.next()` and `c.write_response()`
+    void abort() {
+        aborted = true;
+    }
+
+    /// get current middleware path
+    const std::string &current_middleware_path() const {
+        return handler_paths[level];
     }
 
     /// Get the response as an empty-body response.
@@ -193,20 +294,24 @@ struct brb::Context {
     /// Get the response as a string-body response.
     ///
     /// An empty body is converted directly. A file body is read completely into
-    /// memory. A buffer body is copied into the string body if it contains a
-    /// complete buffer.
+    /// memory.
     ///
-    /// @throws std::runtime_error if the file cannot be read or the buffer body
-    ///         does not contain a complete buffer.
-    response<string_body> &response_string() {
+    /// @throws std::runtime_error if the file cannot be read or the response body is buffer body
+    response<string_body> &response_string(std::optional<std::string> body = std::nullopt) {
         if (auto *p = std::get_if<response<empty_body>>(&r)) {
-            r = response<string_body>(std::move(*p));
+            auto res = response<string_body>(std::move(*p));
+            if (body.has_value())
+                res.body() = std::move(*body);
+
+            r = std::move(res);
         } else if (auto *p = std::get_if<response<string_body>>(&r)) {
             return *p;
         } else if (auto *p = std::get_if<response<file_body>>(&r)) {
             auto res = response<string_body>(std::move(p->base()));
 
-            if (p->body().file().is_open()) {
+            if (body.has_value()) {
+                res.body() = std::move(*body);
+            } else if (p->body().file().is_open()) {
                 res.body().resize(p->body().size());
 
                 auto ec = beast::error_code();
@@ -230,7 +335,7 @@ struct brb::Context {
     /// specified file. If the current response is already a file body, an
     /// optional filepath can be used to reopen it from that file.
     ///
-    /// @param filepath Path of the file to use for the response body.
+    /// @param filepath If not empty, path of the file to use for the response body.
     /// @throws std::runtime_error if a string body is converted without a
     ///         filepath, or if the file cannot be opened or written.
     response<file_body> &response_file(const std::string &filepath = "") {
@@ -299,19 +404,93 @@ struct brb::Context {
         }
     }
 
-    /// get request parser as string-body request
+    /// Get the request parser as a string-body request.
+    ///
+    /// If the parser has not yet been materialized, it is converted to a
+    /// string-body parser. A file-body parser is converted by reading its
+    /// contents into the string body.
+    ///
+    /// @throws std::runtime_error if the parser has already been converted to
+    ///         a buffer-body parser, if a completed file-body parser is being
+    ///         converted, if reading the file fails, or if the parser state
+    ///         is unknown.
     request_parser<string_body> &parser_string() {
-        if (auto *p = std::get_if<string_parser_t>(&parser))
+        if (auto *p = std::get_if<empty_parser_t>(&parser)) {
+            parser = std::make_unique<request_parser<string_body>>(std::move(*p));
+        } else if (auto *p = std::get_if<string_parser_t>(&parser)) {
             return *p->get();
-        parser = std::make_unique<request_parser<string_body>>(std::move(parser_empty()));
+        } else if (auto *p = std::get_if<file_parser_t>(&parser)) {
+            auto &fp = *p->get();
+            if (!fp.is_done())
+                throw std::runtime_error("the parser is already converted to file parser and it's not done");
+
+            std::string body;
+            body.resize(fp.get().body().size());
+
+            auto ec = beast::error_code();
+            fp.get().body().file().read(body.data(), body.size(), ec);
+
+            if (ec)
+                throw std::runtime_error(ec.message());
+
+            auto sp          = std::make_unique<request_parser<string_body>>(std::move(fp.get().base()));
+            sp->get().body() = std::move(body);
+            parser           = std::move(sp);
+        } else if (std::get_if<buffer_parser_t>(&parser)) {
+            throw std::runtime_error("the parser is already converted to buffer parser");
+        } else {
+            throw std::runtime_error("unknown parser");
+        }
+
         return *std::get<string_parser_t>(parser);
     }
 
-    /// get request parser as file-body request
-    request_parser<file_body> &parser_file() {
-        if (auto *p = std::get_if<file_parser_t>(&parser))
-            return *p->get();
-        parser = std::make_unique<request_parser<file_body>>(std::move(parser_empty()));
+    /// Get the request parser as a file-body request.
+    ///
+    /// If the parser has not yet been materialized, it is converted to a
+    /// file-body parser. If @p filepath is non-empty, the file body is opened
+    /// for writing at that path. An existing file-body parser may also be
+    /// redirected to a new file when @p filepath is provided.
+    ///
+    /// @param filepath Path to the file used as the request body. If empty,
+    ///                 no file is opened or changed.
+    ///
+    /// @throws std::runtime_error if the parser has already been converted to
+    ///         a string-body or buffer-body parser, if opening the file fails,
+    ///         or if the parser state is unknown.
+    request_parser<file_body> &parser_file(const std::string filepath = "") {
+        if (auto *p = std::get_if<empty_parser_t>(&parser)) {
+            auto fp = std::make_unique<request_parser<file_body>>(std::move(*p));
+
+            if (!filepath.empty()) {
+                auto ec = beast::error_code();
+                fp->get().body().open(filepath.c_str(), beast::file_mode::write, ec);
+
+                if (ec)
+                    throw std::runtime_error(ec.message());
+            }
+
+            parser = std::move(fp);
+        } else if (std::get_if<string_parser_t>(&parser)) {
+            throw std::runtime_error("the parser is already converted to string parser");
+        } else if (auto *p = std::get_if<file_parser_t>(&parser)) {
+            auto &fp = *p->get();
+            if (filepath.empty())
+                return fp;
+
+            auto ec = beast::error_code();
+            fp.get().body().open(filepath.c_str(), beast::file_mode::write, ec);
+
+            if (ec)
+                throw std::runtime_error(ec.message());
+
+            return fp;
+        } else if (std::get_if<buffer_parser_t>(&parser)) {
+            throw std::runtime_error("the parser is already converted to buffer parser");
+        } else {
+            throw std::runtime_error("unknown parser");
+        }
+
         return *std::get<file_parser_t>(parser);
     }
 
@@ -327,6 +506,20 @@ struct brb::Context {
     bool accepts_encoding(std::string_view encoding) const;
     bool is_encoded(std::string_view encoding) const;
 
+    void append_vary(std::string_view value) {
+        auto &res  = this->res();
+        auto  vary = res[http::field::vary];
+        if (vary.empty()) {
+            res.set(http::field::vary, value);
+        } else {
+            res.set(http::field::vary, std::string(vary) + ", " + std::string(value));
+        }
+    }
+
+    void append_vary(http::field value) {
+        append_vary(http::to_string(value));
+    }
+
     awaitable<SSE>  parse_sse();
     awaitable<Part> parse_multipart();
 
@@ -336,7 +529,7 @@ struct brb::Context {
     /// transfer encoding for streaming events.
     void set_event_stream() {
         auto &res = response_buffer();
-        res.set(brb::http::field::content_type, "text/event-stream");
+        res.set(http::field::content_type, "text/event-stream");
         res.chunked(true);
     }
 
@@ -346,9 +539,9 @@ struct brb::Context {
     /// and enables HTTP chunked transfer encoding for streaming parts.
     ///
     /// @param boundary The boundary used to separate multipart body parts.
-    void set_multipart_stream(std::string_view boundary) {
+    void set_multipart_stream(std::string_view boundary, const std::string &multipart_mime = "mixed") {
         auto &res = response_buffer();
-        res.set(brb::http::field::content_type, "multipart/mixed; boundary=" + std::string(boundary));
+        res.set(http::field::content_type, "multipart/" + multipart_mime + "; boundary=" + std::string(boundary));
         res.chunked(true);
     }
 
@@ -363,7 +556,7 @@ struct brb::Context {
     /// @param more Whether additional body data will be written after this chunk.
     ///
     /// @throws boost::system::system_error If the write fails with an error other
-    /// than brb::http::error::need_buffer.
+    /// than http::error::need_buffer.
     awaitable<void> write_chunk(std::string_view data, bool more) {
         auto &res = response_buffer();
         if (!serializer) {
@@ -375,10 +568,38 @@ struct brb::Context {
         res.body().more = more;
 
         try {
-            co_await brb::http::async_write(*stream, *serializer);
+            co_await http::async_write(*stream, *serializer);
         } catch (boost::system::system_error const &e) {
-            if (e.code() != brb::http::error::need_buffer)
+            if (e.code() != http::error::need_buffer)
                 throw;
+        }
+    }
+
+    /// Writes the stored HTTP response to the underlying stream.
+    ///
+    /// Prepares the payload before writing responses using `empty_body`,
+    /// `string_body`, or `file_body`. Responses using `buffer_body` are not
+    /// written by this function and are expected to be handled separately.
+    ///
+    /// @throws boost::system::system_error if the asynchronous write fails.
+    awaitable<void> write_response() {
+        if (aborted)
+            co_return;
+
+        if (auto *p = std::get_if<response<empty_body>>(&r)) {
+            p->prepare_payload();
+            co_await http::async_write(*stream, *p);
+            aborted = true;
+        } else if (auto *p = std::get_if<response<string_body>>(&r)) {
+            p->prepare_payload();
+            co_await http::async_write(*stream, *p);
+            aborted = true;
+        } else if (auto *p = std::get_if<response<file_body>>(&r)) {
+            p->prepare_payload();
+            co_await http::async_write(*stream, *p);
+            aborted = true;
+        } else if (std::get_if<response<buffer_body>>(&r)) {
+            // do nothing
         }
     }
 
@@ -395,12 +616,15 @@ private:
     using serializer_t    = std::unique_ptr<response_serializer<buffer_body>>;
 
     std::variant<empty_parser_t, string_parser_t, file_parser_t, buffer_parser_t>                         parser;
-    serializer_t                                                                                          serializer;
     std::variant<response<empty_body>, response<string_body>, response<file_body>, response<buffer_body>> r;
+    serializer_t                                                                                          serializer;
 
     std::unordered_map<std::string, std::any>              vars;
     std::vector<std::function<awaitable<void>(Context &)>> handlers;
-    size_t                                                 idx = 0;
+    std::vector<std::string>                               handler_paths;
+    size_t                                                 idx   = 0;
+    size_t                                                 level = 0;
+    bool                                                   aborted;
 
     SSE         sse;
     Part        part;

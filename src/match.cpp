@@ -2,49 +2,8 @@ module;
 
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
-#include <filesystem>
 
 module brb;
-namespace fs = std::filesystem;
-
-std::pair<std::string, bool> match_filepath(const std::string &root_uri, const std::string &root_fs, const std::string &uri) {
-    if (!uri.starts_with(root_uri))
-        return {};
-
-    if (uri.size() > root_uri.size() && !root_uri.ends_with('/') && uri[root_uri.size()] != '/')
-        return {};
-
-    std::error_code ec;
-    const auto      root = fs::weakly_canonical(root_fs, ec);
-    if (ec)
-        return {};
-
-    auto path = fs::weakly_canonical(root / uri.substr(root_uri.size()), ec);
-    if (ec)
-        return {};
-
-    if (auto rel = path.lexically_relative(root); rel.empty() || rel == ".." || rel.native().starts_with("../"))
-        return {};
-
-    const bool is_dir = fs::is_directory(path, ec);
-    if (!ec && is_dir) {
-        if (uri.ends_with('/'))
-            path /= "index.html";
-        else
-            return {uri + '/', true}; // redirect to uri + /
-    }
-
-    for (int i = 0; i < 2; ++i) {
-        std::error_code ec;
-        const bool      exists = fs::is_regular_file(path, ec);
-        if (!ec && exists)
-            return {path.string(), false};
-
-        path = path.string() + ".html";
-    }
-
-    return {};
-}
 
 void brb::Router::match(Context &ctx) const {
     const auto  method   = std::string(ctx.req().method_string());
@@ -53,9 +12,12 @@ void brb::Router::match(Context &ctx) const {
     std::scoped_lock<std::mutex> lock(_mtx);
 
     ctx.handlers.reserve(middlewares.size() + 1);
+    ctx.handler_paths.reserve(middlewares.size() + 1);
     for (const auto &[path, fn] : middlewares) {
-        if (url_path.starts_with(path))
+        if (url_path.starts_with(path)) {
             ctx.handlers.push_back(fn);
+            ctx.handler_paths.push_back(path);
+        }
     }
 
     auto fn = [&]() -> Handler {
@@ -69,30 +31,9 @@ void brb::Router::match(Context &ctx) const {
         if (it != handlers.end())
             return it->second;
 
-        if (method != "GET")
-            return [this](Context &c) -> awaitable<void> { co_await not_found(c); };
-
-        for (const auto &[root_uri, root_fs] : file_handlers) {
-            auto [path, redirect] = match_filepath(root_uri, root_fs, url_path);
-            if (path.empty())
-                continue;
-
-            if (!redirect)
-                return handle_file(ctx, path);
-
-            auto query = std::string(ctx.url.encoded_query());
-            return [=](Context &c) -> asio::awaitable<void> {
-                auto &res = c.response_empty();
-                auto  uri = path + (query.empty() ? "" : "?") + query;
-                res.result(http::status::moved_permanently);
-                res.set(http::field::location, uri);
-                res.prepare_payload();
-                co_await http::async_write(*c.stream, res);
-            };
-        }
-
         return [this](Context &c) -> awaitable<void> { co_await not_found(c); };
     }();
 
     ctx.handlers.push_back(std::move(fn));
+    ctx.handler_paths.push_back(url_path);
 }

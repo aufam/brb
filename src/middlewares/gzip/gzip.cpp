@@ -85,7 +85,7 @@ void brb::gzip::decompress(std::string &body) {
     body = std::move(decompressed);
 }
 
-auto brb::middlewares::gzip(Context &c) -> awaitable<void> {
+auto brb::middlewares::gzip::operator()(Context &c) const -> awaitable<void> {
     if (c.is_encoded("gzip")) {
         auto &parser = c.parser_string();
         if (!parser.is_done())
@@ -105,11 +105,10 @@ auto brb::middlewares::gzip(Context &c) -> awaitable<void> {
     auto &res = c.response_string();
 
     // Avoid wasting CPU/memory for tiny responses.
-    if (res.body().size() < 512)
+    if (res.body().size() < min_size)
         co_return;
 
     brb::gzip::compress(res.body());
-
     res.set(http::field::content_encoding, "gzip");
-    res.set(http::field::vary, "Accept-Encoding");
+    c.append_vary(http::field::accept_encoding);
 }
