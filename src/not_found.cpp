@@ -5,7 +5,7 @@ module;
 
 module brb;
 
-auto brb::Router::not_found(Context &c) const -> awaitable<void> {
+auto brb::Engine::not_found(Context &c) const -> awaitable<void> {
     auto &res = c.response_string();
     res.result(http::status::not_found);
     res.set(http::field::content_type, "text/plain");

@@ -3,11 +3,11 @@ module;
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
 #include <boost/url.hpp>
-#include <map>
 
 export module brb;
 
 export namespace brb {
+    struct Engine;
     struct Router;
     struct Context;
     struct SSE;
@@ -42,119 +42,57 @@ export namespace brb {
     using URL = boost::urls::url;
 } // namespace brb
 
-export namespace brb::middlewares {
-    struct request_reader {
-        bool        string_body = false;
-        bool        file_body   = false;
-        bool        temp_file   = false;
-        std::string file_path   = "";
+namespace brb {
+    template <typename F>
+    class defer;
 
-        awaitable<void> operator()(Context &) const;
-    };
+    struct PathCursor;
+} // namespace brb
 
-    struct response_writer {
-        bool        string_body = false;
-        bool        file_body   = false;
-        bool        temp_file   = false;
-        std::string file_path   = "";
+template <typename F>
+class brb::defer {
+public:
+    defer(F fn)
+        : fn(std::move(fn)) {}
+    F fn;
+    ~defer() {
+        fn();
+    }
+};
 
-        awaitable<void> operator()(Context &) const;
-    };
+struct brb::PathCursor {
+    std::string_view path;
+    std::size_t      offset = 0;
 
-    struct require_content_type {
-        std::vector<std::string> content_types;
-        Handler                  on_unsupported = nullptr; ///< 415 if null
-
-        awaitable<void> operator()(Context &) const;
-    };
-
-    struct timeout {
-        std::chrono::steady_clock::duration duration;
-
-        awaitable<void> operator()(Context &) const;
-    };
-
-    struct cors {
-        std::vector<std::string> origins;
-        std::vector<http::verb>  methods;
-        std::vector<http::field> headers;
-
-        bool                 credentials = false;
-        std::chrono::seconds max_age{};
-
-        awaitable<void> operator()(Context &) const;
-
-        bool allowed_origin(std::string_view origin) const {
-            if (std::ranges::find(origins, "*") != origins.end())
-                return true;
-
-            return std::ranges::find(origins, origin) != origins.end();
-        }
-
-        bool allowed_method(http::verb method) const {
-            return std::ranges::find(methods, method) != methods.end();
-        }
-
-        bool allowed_header(std::string_view name) const {
-            auto field = http::string_to_field(name);
-            return field != http::field::unknown && std::ranges::find(headers, field) != headers.end();
-        }
-    };
-} // namespace brb::middlewares
-
-struct brb::Router {
-    /// register an HTTP route handler for the given path
-    void route(std::string path, Handler fn) {
-        std::unique_lock<std::mutex> lock(_mtx);
-        handlers[std::move(path)] = std::move(fn);
+    std::string_view remaining() const {
+        return path.substr(offset);
     }
 
-    /// register a middleware for the given path
-    template <typename... Fn>
-        requires(std::convertible_to<Fn, std::function<awaitable<void>(Context &)>> && ...)
-    void use(std::string path, Fn... fn) {
-        std::unique_lock lock(_mtx);
-        (middlewares.insert({path, std::move(fn)}), ...);
+    std::string_view consumed() const {
+        return path.substr(0, offset);
     }
 
-    /// mount a directory at the given path for serving files
-    void mount(std::string path, std::string dir) {
-        std::unique_lock<std::mutex> lock(_mtx);
-        file_handlers[std::move(path)] = std::move(dir);
-    }
+    std::string_view next_segment() {
+        if (offset >= path.size())
+            return {};
 
-    /// handle a TCP connection
-    /// @return keep alive
-    awaitable<bool> handle(std::shared_ptr<tcp_stream>, boost::optional<uint64_t> body_limit = {}) const;
+        if (path[offset] == '/')
+            ++offset;
 
-    /// close currently active TCP connections
-    void close_all_streams() const {
-        std::unique_lock<std::mutex> lock(_mtx);
-        for (auto &s : _tcp_streams)
-            s->close();
-    }
+        if (offset >= path.size())
+            return {};
 
-protected:
-    using _map_handlers_t    = std::unordered_map<std::string, Handler>;
-    using _map_middlewares_t = std::multimap<std::string, Handler>;
+        const auto start = offset;
+        const auto pos   = path.find('/', start);
 
-    struct _longest_first_t {
-        bool operator()(const std::string &a, const std::string &b) const {
-            return a.size() == b.size() ? a < b : a.size() > b.size();
+        if (pos == std::string_view::npos) {
+            offset = path.size();
+            return path.substr(start);
         }
-    };
-    using _map_file_handlers_t = std::map<std::string, std::string, _longest_first_t>;
 
-    _map_handlers_t      handlers;
-    _map_file_handlers_t file_handlers;
-    _map_middlewares_t   middlewares;
-
-    mutable std::mutex                               _mtx;
-    mutable std::vector<std::shared_ptr<tcp_stream>> _tcp_streams;
-
-    void match(Context &) const;
-
-    virtual awaitable<void> not_found(Context &c) const;
+        offset = pos;
+        return path.substr(start, pos - start);
+    }
 };
 
 struct brb::SSE {
@@ -174,19 +112,6 @@ struct brb::Part {
     static std::string dump_end(const std::string &boundary);
 };
 
-namespace brb {
-    template <typename F>
-    class defer {
-    public:
-        defer(F fn)
-            : fn(std::move(fn)) {}
-        F fn;
-        ~defer() {
-            fn();
-        }
-    };
-}; // namespace brb
-
 struct brb::Context {
     friend Router;
 
@@ -194,6 +119,7 @@ struct brb::Context {
     flat_buffer                 buffer;             ///< request buffer
     URL                         url;                ///< parsed url from request header
     std::string                 multipart_boundary; ///< parsed multipart_boundary
+    std::string_view            current_middleware_path;
 
     /// set local variable for this context
     template <typename T>
@@ -255,23 +181,18 @@ struct brb::Context {
         if (aborted || idx >= handlers.size())
             co_return;
 
-        const auto previous_level = level;
+        const auto md = current_middleware_path;
 
-        level    = idx;
-        auto  fn = handlers[idx++];
-        defer _  = [&]() { level = previous_level; };
+        auto [middleware_path, fn] = handlers[idx++];
+        defer _                    = [&]() { current_middleware_path = md; };
 
+        current_middleware_path = middleware_path;
         co_await fn(*this);
     }
 
     /// disable `c.next()` and `c.write_response()`
     void abort() {
         aborted = true;
-    }
-
-    /// get current middleware path
-    const std::string &current_middleware_path() const {
-        return handler_paths[level];
     }
 
     /// Get the response as an empty-body response.
@@ -603,12 +524,9 @@ struct brb::Context {
         }
     }
 
+    void match(const Router &r, std::string_view path);
+
 private:
-    const Router &router;
-
-    Context(const Router &router)
-        : router(router) {}
-
     using empty_parser_t  = request_parser<empty_body>;
     using string_parser_t = std::unique_ptr<request_parser<string_body>>;
     using file_parser_t   = std::unique_ptr<request_parser<file_body>>;
@@ -619,12 +537,11 @@ private:
     std::variant<response<empty_body>, response<string_body>, response<file_body>, response<buffer_body>> r;
     serializer_t                                                                                          serializer;
 
-    std::unordered_map<std::string, std::any>              vars;
-    std::vector<std::function<awaitable<void>(Context &)>> handlers;
-    std::vector<std::string>                               handler_paths;
-    size_t                                                 idx   = 0;
-    size_t                                                 level = 0;
-    bool                                                   aborted;
+    std::unordered_map<std::string, std::any>         vars;
+    std::vector<std::pair<std::string_view, Handler>> handlers;
+    size_t                                            idx   = 0;
+    size_t                                            level = 0;
+    bool                                              aborted;
 
     SSE         sse;
     Part        part;
@@ -634,4 +551,119 @@ private:
         bool part_state = false; // false = header, true = body
         bool sse_has_data;       // false = header, true = body
     };
+};
+
+export namespace brb::middlewares {
+    struct request_reader {
+        bool        string_body = false;
+        bool        file_body   = false;
+        bool        temp_file   = false;
+        std::string file_path   = "";
+
+        awaitable<void> operator()(Context &) const;
+    };
+
+    struct response_writer {
+        bool        string_body = false;
+        bool        file_body   = false;
+        bool        temp_file   = false;
+        std::string file_path   = "";
+
+        awaitable<void> operator()(Context &) const;
+    };
+
+    struct require_content_type {
+        std::vector<std::string> content_types;
+        Handler                  on_unsupported = nullptr; ///< 415 if null
+
+        awaitable<void> operator()(Context &) const;
+    };
+
+    struct timeout {
+        std::chrono::steady_clock::duration duration;
+
+        awaitable<void> operator()(Context &) const;
+    };
+
+    struct cors {
+        std::vector<std::string> origins;
+        std::vector<http::verb>  methods;
+        std::vector<http::field> headers;
+
+        bool                 credentials = false;
+        std::chrono::seconds max_age{};
+
+        awaitable<void> operator()(Context &) const;
+
+        bool allowed_origin(std::string_view origin) const {
+            if (std::ranges::find(origins, "*") != origins.end())
+                return true;
+
+            return std::ranges::find(origins, origin) != origins.end();
+        }
+
+        bool allowed_method(http::verb method) const {
+            return std::ranges::find(methods, method) != methods.end();
+        }
+
+        bool allowed_header(std::string_view name) const {
+            auto field = http::string_to_field(name);
+            return field != http::field::unknown && std::ranges::find(headers, field) != headers.end();
+        }
+    };
+} // namespace brb::middlewares
+
+struct brb::Router {
+    std::vector<brb::Handler>                    handlers;
+    std::unordered_map<std::string_view, Router> children;
+    std::unique_ptr<Router>                      wildcard;
+    std::string                                  parameter_name;
+
+    template <typename... Fn>
+        requires(std::convertible_to<Fn, std::function<awaitable<void>(Context &)>> && ...)
+    void use(Fn... handlers) {
+        (handlers.push_back(std::move(handlers)), ...);
+    }
+
+    template <typename... Fn>
+        requires(std::convertible_to<Fn, std::function<awaitable<void>(Context &)>> && ...)
+    void route(std::string_view pattern, Fn... handlers) {
+        Router &r = group(pattern);
+        r.use(std::move(handlers)...);
+    }
+
+    Router &group(std::string_view pattern) {
+        PathCursor path{pattern};
+        auto       segment = path.next_segment();
+
+        if (segment.empty()) {
+            return *this;
+        } else if (segment.front() == ':') {
+            parameter_name = segment;
+
+            auto &child = *(wildcard = std::make_unique<Router>());
+            return child.group(path.remaining());
+        } else {
+            auto &child = children[segment];
+            return child.group(path.remaining());
+        }
+    }
+};
+
+struct brb::Engine : Router {
+    auto handle(std::shared_ptr<tcp_stream> stream, boost::optional<uint64_t> body_limit = {}) const -> awaitable<bool>;
+    auto run() -> awaitable<void>;
+
+    auto async_main() -> awaitable<bool>;
+    auto async_cancel() -> awaitable<bool>;
+
+    virtual auto not_found(Context &) const -> awaitable<void>;
+
+    explicit Engine(asio::io_context &io)
+        : acceptor(io) {}
+
+    asio::ip::tcp::acceptor                                 acceptor;
+    std::atomic_bool                                        is_running{true};
+    mutable std::mutex                                      mtx;
+    mutable std::vector<std::shared_ptr<beast::tcp_stream>> streams;
 };

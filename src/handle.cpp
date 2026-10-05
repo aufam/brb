@@ -8,8 +8,8 @@ module brb;
 
 static std::string get_multipart_boundary(std::string_view);
 
-auto brb::Router::handle(std::shared_ptr<tcp_stream> stream, boost::optional<uint64_t> body_limit) const -> awaitable<bool> {
-    Context ctx(*this);
+auto brb::Engine::handle(std::shared_ptr<tcp_stream> stream, boost::optional<uint64_t> body_limit) const -> awaitable<bool> {
+    Context ctx;
     ctx.stream   = stream;
     auto &parser = ctx.parser_empty();
     auto &req    = parser.get().base();
@@ -34,28 +34,31 @@ auto brb::Router::handle(std::shared_ptr<tcp_stream> stream, boost::optional<uin
         } catch (boost::system::system_error &e) {
             std::ignore = e;
         }
-        co_return std::visit([](auto &res) { return res.keep_alive(); }, ctx.r);
+        co_return ctx.keep_alive();
     }
-    ctx.url = *url;
+    ctx.url   = *url;
+    auto path = ctx.url.path();
+
+    ctx.match(*this, path);
 
     {
-        std::unique_lock<std::mutex> lock(_mtx);
-        _tcp_streams.push_back(stream);
+        std::unique_lock<std::mutex> lock(mtx);
+        streams.push_back(stream);
     };
     defer _ = [&]() {
-        std::unique_lock<std::mutex> lock(_mtx);
-        auto it = std::remove_if(_tcp_streams.begin(), _tcp_streams.end(), [&](auto &s) { return s == stream; });
-        _tcp_streams.erase(it, _tcp_streams.end());
+        std::unique_lock<std::mutex> lock(mtx);
+        auto                         it = std::remove_if(streams.begin(), streams.end(), [&](auto &s) { return s == stream; });
+        streams.erase(it, streams.end());
     };
 
-    match(ctx);
     try {
         co_await ctx.next();
         co_await ctx.write_response();
     } catch (boost::system::system_error &e) {
         std::ignore = e;
     }
-    co_return std::visit([](auto &res) { return res.keep_alive(); }, ctx.r);
+
+    co_return ctx.keep_alive();
 }
 
 std::string get_multipart_boundary(std::string_view content_type) {

@@ -5,35 +5,33 @@ module;
 
 module brb;
 
-void brb::Router::match(Context &ctx) const {
-    const auto  method   = std::string(ctx.req().method_string());
-    const auto &url_path = ctx.url.path();
+void brb::Context::match(const Router &r, std::string_view path) {
+    PathCursor       cursor{path};
+    std::string_view middleware = "/";
+    const Router    *node       = &r;
 
-    std::scoped_lock<std::mutex> lock(_mtx);
+    while (true) {
+        auto &handlers = node->handlers;
+        this->handlers.reserve(this->handlers.size() + handlers.size());
+        for (auto &h : handlers)
+            this->handlers.push_back({middleware, h});
 
-    ctx.handlers.reserve(middlewares.size() + 1);
-    ctx.handler_paths.reserve(middlewares.size() + 1);
-    for (const auto &[path, fn] : middlewares) {
-        if (url_path.starts_with(path)) {
-            ctx.handlers.push_back(fn);
-            ctx.handler_paths.push_back(path);
+        auto segment = cursor.next_segment();
+        middleware   = cursor.consumed();
+        if (segment.empty())
+            break;
+
+        if (auto it = node->children.find(segment); it != node->children.end()) {
+            node = &it->second;
+            continue;
         }
+
+        if (auto &w = node->wildcard) {
+            this->set(node->parameter_name, segment);
+            node = w.get();
+            continue;
+        }
+
+        break;
     }
-
-    auto fn = [&]() -> Handler {
-        auto key = method + " " + url_path;
-        auto it  = handlers.find(key);
-        if (it != handlers.end())
-            return it->second;
-
-        key = url_path;
-        it  = handlers.find(key);
-        if (it != handlers.end())
-            return it->second;
-
-        return [this](Context &c) -> awaitable<void> { co_await not_found(c); };
-    }();
-
-    ctx.handlers.push_back(std::move(fn));
-    ctx.handler_paths.push_back(url_path);
 }
