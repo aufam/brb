@@ -1,6 +1,7 @@
 module;
 
 #include <boost/asio.hpp>
+#include <boost/asio/experimental/parallel_group.hpp>
 #include <boost/beast.hpp>
 #include <boost/url.hpp>
 
@@ -9,56 +10,106 @@ module brb;
 static std::string get_multipart_boundary(std::string_view);
 
 auto brb::Engine::handle(std::shared_ptr<tcp_stream> stream, boost::optional<uint64_t> body_limit) const -> awaitable<bool> {
-    Context ctx;
-    ctx.stream   = stream;
-    auto &parser = ctx.parser_empty();
+    Context c;
+    c.stream     = stream;
+    auto &parser = c.parser_empty();
     auto &req    = parser.get().base();
 
     parser.body_limit(body_limit);
-    try {
-        co_await http::async_read_header(*stream, ctx.buffer, parser);
-    } catch (boost::system::system_error &e) {
-        std::ignore = e;
-    }
+    co_await http::async_read_header(*stream, c.buffer, parser);
 
-    ctx.multipart_boundary = get_multipart_boundary(req[brb::http::field::content_type]);
-
-    auto &res = ctx.response_empty();
+    auto &res = c.response_empty();
     res.keep_alive(parser.get().keep_alive());
 
     const auto url = urls::parse_origin_form(req.target());
     if (!url) {
         res.result(http::status::bad_request);
-        try {
-            co_await http::async_write(*stream, res);
-        } catch (boost::system::system_error &e) {
-            std::ignore = e;
-        }
-        co_return ctx.keep_alive();
+        co_await http::async_write(*stream, res);
+        co_return c.keep_alive();
     }
-    ctx.url   = *url;
-    auto path = ctx.url.path();
 
-    ctx.match(*this, path);
+    c.url                = *url;
+    c.multipart_boundary = get_multipart_boundary(req[brb::http::field::content_type]);
 
+    auto path = c.url.path();
+    c.match(*this, path);
+    c.handlers.push_back({"/", [this](Context &c) -> awaitable<void> { co_await not_found(c); }});
+
+    co_await c.next();
+    co_await c.write_response();
+
+    co_return c.keep_alive();
+}
+
+auto brb::Engine::run(const run_opts &opts) -> awaitable<void> {
+    try {
+        const auto address  = asio::ip::make_address(opts.host);
+        const auto endpoint = asio::ip::tcp::endpoint(address, opts.port);
+
+        acceptor.open(endpoint.protocol());
+        acceptor.set_option(asio::ip::tcp::acceptor::reuse_address(true));
+        acceptor.bind(endpoint);
+        acceptor.listen(opts.backlog);
+    } catch (boost::system::system_error &e) {
+        std::cerr << "Failed to run server " << opts.host << ":" << opts.port << ": " << e.code().message() << std::endl;
+        exit(1);
+    }
+
+    auto io = co_await asio::this_coro::executor;
+    if (!opts.cancellation_signals.empty())
+        asio::co_spawn(io, async_cancel(opts.cancellation_signals), asio::detached);
+
+    while (true) {
+        auto ec     = beast::error_code();
+        auto stream = std::make_shared<tcp_stream>(co_await acceptor.async_accept(asio::redirect_error(ec)));
+        if (ec)
+            break;
+
+        asio::co_spawn(io, async_work(stream), asio::detached);
+    }
+}
+
+auto brb::Engine::async_work(std::shared_ptr<tcp_stream> stream) -> awaitable<void> {
     {
-        std::unique_lock<std::mutex> lock(mtx);
+        auto lock = std::unique_lock<std::mutex>(mtx);
         streams.push_back(stream);
     };
     defer _ = [&]() {
-        std::unique_lock<std::mutex> lock(mtx);
-        auto                         it = std::remove_if(streams.begin(), streams.end(), [&](auto &s) { return s == stream; });
+        auto lock = std::unique_lock<std::mutex>(mtx);
+        auto it   = std::remove_if(streams.begin(), streams.end(), [&](auto &s) { return s == stream; });
         streams.erase(it, streams.end());
     };
 
+    while (true)
+        try {
+            bool keep_alive = co_await handle(stream);
+            if (!keep_alive)
+                break;
+        } catch (boost::system::system_error &e) {
+            std::ignore = e;
+            break;
+        }
+}
+
+auto brb::Engine::async_cancel(const std::vector<int> &cancellation_signals) -> awaitable<void> {
+    asio::signal_set signals(co_await asio::this_coro::executor);
+    for (int signal : cancellation_signals)
+        signals.add(signal);
+
+    std::ignore = co_await signals.async_wait();
+    close();
+}
+
+void brb::Engine::close() {
     try {
-        co_await ctx.next();
-        co_await ctx.write_response();
+        acceptor.close();
     } catch (boost::system::system_error &e) {
         std::ignore = e;
     }
 
-    co_return ctx.keep_alive();
+    auto lock = std::unique_lock<std::mutex>(mtx);
+    for (auto &s : streams)
+        s->close();
 }
 
 std::string get_multipart_boundary(std::string_view content_type) {

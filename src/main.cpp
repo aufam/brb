@@ -25,13 +25,11 @@ struct Args {
 int main(int argc, char **argv) {
     const auto args = cpx::cli11::parse<Args>("brb: Static file serving", argc, argv);
 
-    boost::asio::io_context        io;
-    boost::asio::ip::tcp::acceptor acceptor{io};
-    brb::Router                    router;
-    std::atomic_bool               is_running{true};
+    boost::asio::io_context io;
+    brb::Engine             engine{io};
 
-    static int cnt = 0;
-    router.use("/", [](brb::Context &c) -> boost::asio::awaitable<void> {
+    static int cnt    = 0;
+    const auto logger = [](brb::Context &c) -> boost::asio::awaitable<void> {
         const auto  ep  = c.stream->socket().remote_endpoint();
         const auto &req = c.req();
         fmt::println("[{}:{}] {} {}", ep.address().to_string(), ep.port(), req.method_string(), req.target());
@@ -48,7 +46,7 @@ int main(int argc, char **argv) {
 
         const auto &res = c.res();
         fmt::println("[{}:{}] {} {}", ep.address().to_string(), ep.port(), (int)res.result(), res.reason());
-    });
+    };
 
     const auto response_writer = brb::middlewares::response_writer{};
 
@@ -59,7 +57,7 @@ int main(int argc, char **argv) {
         .dotfiles          = true,
     };
 
-    router.use("/", response_writer, static_files);
+    engine.use(logger, response_writer, static_files);
 
     const auto request_reader = brb::middlewares::request_reader{
         .string_body = true,
@@ -67,9 +65,11 @@ int main(int argc, char **argv) {
 
     const auto gzip = brb::middlewares::gzip{};
 
-    router.use("/api/", request_reader, gzip);
+    auto &api = engine.group("api");
 
-    router.route("GET /api/products", [](brb::Context &c) -> brb::awaitable<void> {
+    api.use(request_reader, gzip);
+
+    api.route(brb::http::verb::get, "/products", [](brb::Context &c) -> brb::awaitable<void> {
         auto &body = c.response_string().body();
 
         body = "[";
@@ -82,7 +82,7 @@ int main(int argc, char **argv) {
         co_return;
     });
 
-    router.route("GET /stream", [](brb::Context &c) -> brb::awaitable<void> {
+    engine.route(brb::http::verb::get, "/stream", [](brb::Context &c) -> brb::awaitable<void> {
         c.set_event_stream();
         brb::SSE sse;
 
@@ -97,7 +97,7 @@ int main(int argc, char **argv) {
         co_await c.write_chunk(body, false);
     });
 
-    router.route("GET /multipart", [](brb::Context &c) -> brb::awaitable<void> {
+    engine.route(brb::http::verb::get, "/multipart", [](brb::Context &c) -> brb::awaitable<void> {
         const std::string boundary = "boundary";
         c.set_multipart_stream(boundary);
         brb::Part part;
@@ -114,56 +114,12 @@ int main(int argc, char **argv) {
         co_await c.write_chunk(brb::Part::dump_end(boundary), false);
     });
 
-    auto work = [&](std::shared_ptr<boost::beast::tcp_stream> stream) -> boost::asio::awaitable<void> {
-        while (is_running) {
-            bool keep_alive = co_await router.handle(stream);
-            if (!keep_alive)
-                break;
-        }
+    const auto run_opts = brb::Engine::run_opts{
+        .host                 = args.host,
+        .port                 = args.port,
+        .cancellation_signals = {SIGINT, SIGTERM},
     };
-
-    auto async_main = [&]() -> boost::asio::awaitable<void> {
-        while (is_running) {
-            std::shared_ptr<boost::beast::tcp_stream> stream;
-            try {
-                stream = std::make_shared<boost::beast::tcp_stream>(co_await acceptor.async_accept());
-            } catch (boost::system::system_error &e) {
-                fmt::println("Acceptor stopped: {}", e.code().message());
-                break;
-            }
-            boost::asio::co_spawn(io, work(stream), boost::asio::detached);
-        }
-    };
-
-    auto async_cancel = [&]() -> boost::asio::awaitable<void> {
-        boost::asio::signal_set signals(co_await boost::asio::this_coro::executor, SIGINT, SIGTERM);
-        std::ignore = co_await signals.async_wait();
-
-        is_running = false;
-        try {
-            acceptor.close();
-        } catch (boost::system::system_error &e) {
-            std::ignore = e;
-        }
-
-        router.close_all_streams();
-    };
-
-    try {
-        const auto address  = boost::asio::ip::make_address(args.host);
-        const auto endpoint = boost::asio::ip::tcp::endpoint(address, args.port);
-
-        acceptor.open(endpoint.protocol());
-        acceptor.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
-        acceptor.bind(endpoint);
-        acceptor.listen(boost::asio::socket_base::max_listen_connections);
-    } catch (boost::system::system_error &e) {
-        fmt::println(stderr, "Failed to start server {}:{}: {}", args.host, args.port, e.code().message());
-        exit(1);
-    }
-
-    boost::asio::co_spawn(io, async_main(), boost::asio::detached);
-    boost::asio::co_spawn(io, async_cancel(), boost::asio::detached);
+    boost::asio::co_spawn(io, engine.run(run_opts), boost::asio::detached);
 
     fmt::println("Server is running on http://{}:{}", args.host, args.port);
 

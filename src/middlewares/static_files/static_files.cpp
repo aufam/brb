@@ -20,8 +20,7 @@ namespace {
     };
 } // namespace
 
-static MatchResult
-match_filepath(const std::string &root_uri, const std::string &uri, const brb::middlewares::static_files &opts) {
+static MatchResult match_filepath(std::string_view root_uri, const std::string &uri, const brb::middlewares::static_files &opts) {
     if (!uri.starts_with(root_uri))
         return {};
 
@@ -387,7 +386,7 @@ auto brb::middlewares::static_files::operator()(Context &c) const -> awaitable<v
         co_return;
     }
 
-    auto [path, redirect, entries, is_dir] = match_filepath(c.current_middleware_path(), c.url.path(), opts);
+    auto [path, redirect, entries, is_dir] = match_filepath(c.current_middleware_path, c.url.path(), opts);
     if (path.empty() && !is_dir) {
         co_await c.next();
         co_return;

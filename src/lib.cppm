@@ -113,7 +113,7 @@ struct brb::Part {
 };
 
 struct brb::Context {
-    friend Router;
+    friend Engine;
 
     std::shared_ptr<tcp_stream> stream;
     flat_buffer                 buffer;             ///< request buffer
@@ -481,7 +481,7 @@ struct brb::Context {
     awaitable<void> write_chunk(std::string_view data, bool more) {
         auto &res = response_buffer();
         if (!serializer) {
-            serializer = std::make_unique<boost::beast::http::response_serializer<boost::beast::http::buffer_body>>(res);
+            serializer = std::make_unique<http::response_serializer<http::buffer_body>>(res);
         }
 
         res.body().data = const_cast<char *>(data.data());
@@ -539,9 +539,9 @@ private:
 
     std::unordered_map<std::string, std::any>         vars;
     std::vector<std::pair<std::string_view, Handler>> handlers;
-    size_t                                            idx   = 0;
-    size_t                                            level = 0;
-    bool                                              aborted;
+    size_t                                            idx     = 0;
+    size_t                                            level   = 0;
+    bool                                              aborted = false;
 
     SSE         sse;
     Part        part;
@@ -568,6 +568,13 @@ export namespace brb::middlewares {
         bool        file_body   = false;
         bool        temp_file   = false;
         std::string file_path   = "";
+
+        awaitable<void> operator()(Context &) const;
+    };
+
+    struct require_method {
+        http::verb method;
+        Handler    on_not_allowed = nullptr; ///< 405 if null
 
         awaitable<void> operator()(Context &) const;
     };
@@ -622,14 +629,14 @@ struct brb::Router {
     template <typename... Fn>
         requires(std::convertible_to<Fn, std::function<awaitable<void>(Context &)>> && ...)
     void use(Fn... handlers) {
-        (handlers.push_back(std::move(handlers)), ...);
+        (this->handlers.push_back(std::move(handlers)), ...);
     }
 
     template <typename... Fn>
         requires(std::convertible_to<Fn, std::function<awaitable<void>(Context &)>> && ...)
-    void route(std::string_view pattern, Fn... handlers) {
+    void route(http::verb method, std::string_view pattern, Fn... handlers) {
         Router &r = group(pattern);
-        r.use(std::move(handlers)...);
+        r.use(middlewares::require_method{method}, std::move(handlers)...);
     }
 
     Router &group(std::string_view pattern) {
@@ -651,19 +658,33 @@ struct brb::Router {
 };
 
 struct brb::Engine : Router {
-    auto handle(std::shared_ptr<tcp_stream> stream, boost::optional<uint64_t> body_limit = {}) const -> awaitable<bool>;
-    auto run() -> awaitable<void>;
-
-    auto async_main() -> awaitable<bool>;
-    auto async_cancel() -> awaitable<bool>;
-
-    virtual auto not_found(Context &) const -> awaitable<void>;
-
     explicit Engine(asio::io_context &io)
         : acceptor(io) {}
 
-    asio::ip::tcp::acceptor                                 acceptor;
-    std::atomic_bool                                        is_running{true};
-    mutable std::mutex                                      mtx;
-    mutable std::vector<std::shared_ptr<beast::tcp_stream>> streams;
+    /// handle one stream session, returns true if keep alive
+    /// @throw boost::system::system_error
+    auto handle(std::shared_ptr<tcp_stream> stream, boost::optional<uint64_t> body_limit = {}) const -> awaitable<bool>;
+
+    /// run the engine
+    /// @throw runtime_error when failed to configure the listener
+    struct run_opts {
+        std::string         host;
+        asio::ip::port_type port;
+        int                 backlog              = asio::socket_base::max_listen_connections;
+        std::vector<int>    cancellation_signals = {};
+    };
+    auto run(const run_opts &) -> awaitable<void>;
+
+    /// close acceptor and all streams
+    void close();
+
+protected:
+    auto async_work(std::shared_ptr<tcp_stream> stream) -> awaitable<void>;
+    auto async_cancel(const std::vector<int> &cancellation_signals) -> awaitable<void>;
+
+    virtual auto not_found(Context &) const -> awaitable<void>;
+
+    asio::ip::tcp::acceptor                          acceptor;
+    mutable std::mutex                               mtx;
+    mutable std::vector<std::shared_ptr<tcp_stream>> streams;
 };

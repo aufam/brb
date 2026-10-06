@@ -68,6 +68,20 @@ auto brb::middlewares::response_writer::operator()(Context &c) const -> awaitabl
     co_await c.write_response();
 }
 
+auto brb::middlewares::require_method::operator()(Context &c) const -> awaitable<void> {
+    if (c.req().method() == method) {
+        co_await c.next();
+        co_return;
+    }
+
+    c.res().result(http::status::method_not_allowed);
+    if (on_not_allowed) {
+        co_await on_not_allowed(c);
+    }
+
+    co_await c.write_response();
+}
+
 auto brb::middlewares::require_content_type::operator()(Context &c) const -> awaitable<void> {
     auto ct = c.req()[http::field::content_type];
     bool ok = false;
