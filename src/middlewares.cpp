@@ -147,7 +147,10 @@ auto brb::middlewares::cors::operator()(Context &c) const -> awaitable<void> {
         co_return;
     }
 
-    res.set(http::field::access_control_allow_origin, origin);
+    if (!credentials && std::find(origins.begin(), origins.end(), "*") != origins.end())
+        res.set(http::field::access_control_allow_origin, "*");
+    else
+        res.set(http::field::access_control_allow_origin, origin);
     c.append_vary(http::field::origin);
 
     if (credentials)

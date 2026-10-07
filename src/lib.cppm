@@ -61,36 +61,37 @@ public:
 };
 
 struct brb::PathCursor {
-    std::string_view path;
-    std::size_t      offset = 0;
+    explicit PathCursor(std::string_view path)
+        : path(path) {
+        if (path.starts_with('/') || path.empty()) {
+            offset++;
+        }
+    }
+
+    const std::string_view path;
+    std::size_t            offset = 0;
 
     std::string_view remaining() const {
-        return path.substr(offset);
+        return offset > path.size() ? "" : path.substr(offset);
     }
 
     std::string_view consumed() const {
-        return path.substr(0, offset);
+        return offset > path.size() ? path : path.substr(0, offset);
     }
 
-    std::string_view next_segment() {
-        if (offset >= path.size())
-            return {};
-
-        if (path[offset] == '/')
-            ++offset;
-
-        if (offset >= path.size())
-            return {};
+    std::optional<std::string_view> next_segment() {
+        if (offset > path.size())
+            return std::nullopt;
 
         const auto start = offset;
         const auto pos   = path.find('/', start);
 
         if (pos == std::string_view::npos) {
-            offset = path.size();
+            offset = path.size() + 1;
             return path.substr(start);
         }
 
-        offset = pos;
+        offset = pos + 1;
         return path.substr(start, pos - start);
     }
 };
@@ -118,6 +119,7 @@ struct brb::Context {
     std::shared_ptr<tcp_stream> stream;
     flat_buffer                 buffer;             ///< request buffer
     URL                         url;                ///< parsed url from request header
+    std::string                 url_path;           ///< string view to decoded url path
     std::string                 multipart_boundary; ///< parsed multipart_boundary
     std::string_view            current_middleware_path;
 
@@ -524,7 +526,7 @@ struct brb::Context {
         }
     }
 
-    void match(const Router &r, std::string_view path);
+    void match(const Router &r);
 
 private:
     using empty_parser_t  = request_parser<empty_body>;
@@ -597,8 +599,9 @@ export namespace brb::middlewares {
         std::vector<http::verb>  methods;
         std::vector<http::field> headers;
 
-        bool                 credentials = false;
         std::chrono::seconds max_age{};
+        bool                 credentials    = false;
+        bool                 write_response = true;
 
         awaitable<void> operator()(Context &) const;
 
@@ -621,37 +624,39 @@ export namespace brb::middlewares {
 } // namespace brb::middlewares
 
 struct brb::Router {
-    std::vector<brb::Handler>                    handlers;
-    std::unordered_map<std::string_view, Router> children;
-    std::unique_ptr<Router>                      wildcard;
-    std::string                                  parameter_name;
+    std::vector<Handler>                                 middleware;
+    std::unordered_map<std::string_view, Router>         children;
+    std::unique_ptr<Router>                              wildcard;
+    std::string                                          parameter_name;
+    std::unordered_map<http::verb, std::vector<Handler>> routes;
 
     template <typename... Fn>
         requires(std::convertible_to<Fn, std::function<awaitable<void>(Context &)>> && ...)
     void use(Fn... handlers) {
-        (this->handlers.push_back(std::move(handlers)), ...);
+        (middleware.push_back(std::move(handlers)), ...);
     }
 
     template <typename... Fn>
         requires(std::convertible_to<Fn, std::function<awaitable<void>(Context &)>> && ...)
     void route(http::verb method, std::string_view pattern, Fn... handlers) {
-        Router &r = group(pattern);
-        r.use(middlewares::require_method{method}, std::move(handlers)...);
+        group(pattern).routes[method] = {std::move(handlers)...};
     }
 
     Router &group(std::string_view pattern) {
-        PathCursor path{pattern};
+        PathCursor path(pattern);
         auto       segment = path.next_segment();
 
-        if (segment.empty()) {
+        if (!segment.has_value()) {
             return *this;
-        } else if (segment.front() == ':') {
-            parameter_name = segment;
+        }
+
+        if (auto &s = *segment; s.starts_with(':')) {
+            parameter_name = s;
 
             auto &child = *(wildcard = std::make_unique<Router>());
             return child.group(path.remaining());
         } else {
-            auto &child = children[segment];
+            auto &child = children[s];
             return child.group(path.remaining());
         }
     }

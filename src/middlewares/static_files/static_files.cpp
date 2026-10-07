@@ -386,7 +386,7 @@ auto brb::middlewares::static_files::operator()(Context &c) const -> awaitable<v
         co_return;
     }
 
-    auto [path, redirect, entries, is_dir] = match_filepath(c.current_middleware_path, c.url.path(), opts);
+    auto [path, redirect, entries, is_dir] = match_filepath(c.current_middleware_path, c.url_path, opts);
     if (path.empty() && !is_dir) {
         co_await c.next();
         co_return;
@@ -394,10 +394,12 @@ auto brb::middlewares::static_files::operator()(Context &c) const -> awaitable<v
 
     if (is_dir) {
         std::string body;
+        std::string url_path = std::string(c.url_path);
+
         body += "<!doctype html><html><head><meta charset=\"utf-8\">";
-        body += "<title>Index of " + c.url.path() + "</title>";
+        body += "<title>Index of " + url_path + "</title>";
         body += "</head><body>";
-        body += "<h1>Index of " + c.url.path() + "</h1>";
+        body += "<h1>Index of " + url_path + "</h1>";
         body += "<ul>";
 
         for (const auto &entry : entries) {
@@ -425,11 +427,17 @@ auto brb::middlewares::static_files::operator()(Context &c) const -> awaitable<v
     }
 
     if (redirect) {
-        auto  query = std::string(c.url.encoded_query());
-        auto &res   = c.response_empty();
-        auto  uri   = path + (query.empty() ? "" : "?") + query;
+        auto uri   = boost::urls::url{};
+        auto query = c.url.encoded_query();
+
+        uri.set_path(path);
+        if (!query.empty())
+            uri.set_encoded_query(query);
+
+        auto &res = c.response_empty();
+        res.set(http::field::location, uri.buffer());
         res.result(http::status::moved_permanently);
-        res.set(http::field::location, uri);
+
         co_await c.write_response();
         co_return;
     }

@@ -29,11 +29,11 @@ auto brb::Engine::handle(std::shared_ptr<tcp_stream> stream, boost::optional<uin
     }
 
     c.url                = *url;
+    c.url_path           = url->path();
     c.multipart_boundary = get_multipart_boundary(req[brb::http::field::content_type]);
 
-    auto path = c.url.path();
-    c.match(*this, path);
-    c.handlers.push_back({"/", [this](Context &c) -> awaitable<void> { co_await not_found(c); }});
+    c.match(*this);
+    c.handlers.push_back({"", [this](Context &c) -> awaitable<void> { co_await not_found(c); }});
 
     co_await c.next();
     co_await c.write_response();
@@ -58,6 +58,8 @@ auto brb::Engine::run(const run_opts &opts) -> awaitable<void> {
     auto io = co_await asio::this_coro::executor;
     if (!opts.cancellation_signals.empty())
         asio::co_spawn(io, async_cancel(opts.cancellation_signals), asio::detached);
+
+    std::cerr << "Server is running on http://" << opts.host << ":" << opts.port << std::endl;
 
     while (true) {
         auto ec     = beast::error_code();

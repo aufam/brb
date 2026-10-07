@@ -121,8 +121,6 @@ int main(int argc, char **argv) {
     };
     boost::asio::co_spawn(io, engine.run(run_opts), boost::asio::detached);
 
-    fmt::println("Server is running on http://{}:{}", args.host, args.port);
-
     std::vector<std::thread> ts;
     ts.reserve(args.parallel);
     for (uint8_t i = 0; i < args.parallel; ++i)
