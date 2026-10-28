@@ -595,15 +595,6 @@ export namespace brb::middlewares {
         awaitable<void> operator()(Context &) const;
     };
 
-    struct response_writer {
-        bool        string_body = false;
-        bool        file_body   = false;
-        bool        temp_file   = false;
-        std::string file_path   = "";
-
-        awaitable<void> operator()(Context &) const;
-    };
-
     struct require_method {
         http::verb method;
         Handler    on_not_allowed = nullptr; ///< 405 if null

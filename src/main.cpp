@@ -28,14 +28,10 @@ int main(int argc, char **argv) {
     boost::asio::io_context io;
     brb::Engine             engine{io};
 
-    static int cnt    = 0;
     const auto logger = [](brb::Context &c) -> boost::asio::awaitable<void> {
         const auto  ep  = c.stream->socket().remote_endpoint();
         const auto &req = c.req();
         fmt::println("[{}:{}] {} {}", ep.address().to_string(), ep.port(), req.method_string(), req.target());
-
-        if (cnt++ == 20)
-            exit(1);
 
         try {
             co_await c.next();
@@ -48,8 +44,6 @@ int main(int argc, char **argv) {
         fmt::println("[{}:{}] {} {}", ep.address().to_string(), ep.port(), (int)res.result(), res.reason());
     };
 
-    const auto response_writer = brb::middlewares::response_writer{};
-
     const auto static_files = brb::middlewares::static_files{
         .dir               = args.directory,
         .spa               = true,
@@ -57,7 +51,7 @@ int main(int argc, char **argv) {
         .dotfiles          = true,
     };
 
-    engine.use(logger, response_writer, static_files);
+    engine.use(logger, static_files);
 
     const auto request_reader = brb::middlewares::request_reader{
         .string_body = true,
