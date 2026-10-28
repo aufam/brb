@@ -349,18 +349,36 @@ TEST(router, nested_middleware) {
         co_await c.next();
     });
 
-    users.route(brb::http::verb::unknown, "/:id", [&](brb::Context &) -> brb::awaitable<void> {
+    users.route(brb::http::verb::unknown, "/sessions/:id/configure", [&](brb::Context &) -> brb::awaitable<void> {
         calls.push_back(3);
         co_return;
     });
 
-    brb::Context c;
-    c.url_path = "/users/123";
-    c.match(r);
+    users.route(brb::http::verb::unknown, "/sessions/:id/build", [&](brb::Context &) -> brb::awaitable<void> {
+        calls.push_back(4);
+        co_return;
+    });
 
-    brb::asio::io_context io;
-    brb::asio::co_spawn(io, c.next(), brb::asio::detached);
-    io.run();
+    users.route(brb::http::verb::unknown, "/sessions/:id/run", [&](brb::Context &) -> brb::awaitable<void> {
+        calls.push_back(5);
+        co_return;
+    });
 
-    EXPECT_EQ(calls, (std::vector<int>{1, 2, 3}));
+    auto exec = [&](std::string type, int expected) {
+        calls.clear();
+
+        brb::Context c;
+        c.url_path = "/users/sessions/123/" + type;
+        c.match(r);
+
+        brb::asio::io_context io;
+        brb::asio::co_spawn(io, c.next(), brb::asio::detached);
+        io.run();
+
+        EXPECT_EQ(calls, (std::vector<int>{1, 2, expected}));
+    };
+
+    exec("configure", 3);
+    exec("build", 4);
+    exec("run", 5);
 }

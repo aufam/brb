@@ -683,8 +683,10 @@ struct brb::Router {
         if (auto &s = *segment; s.starts_with(':')) {
             parameter_name = s;
 
-            auto &child = *(wildcard = std::make_unique<Router>());
-            return child.group(path.remaining());
+            if (!wildcard)
+                wildcard = std::make_unique<Router>();
+
+            return wildcard->group(path.remaining());
         } else {
             auto &child = children[s];
             return child.group(path.remaining());
