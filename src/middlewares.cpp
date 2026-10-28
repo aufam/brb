@@ -63,11 +63,6 @@ auto brb::middlewares::request_reader::operator()(Context &c) const -> awaitable
     }
 }
 
-auto brb::middlewares::response_writer::operator()(Context &c) const -> awaitable<void> {
-    co_await c.next();
-    co_await c.write_response();
-}
-
 auto brb::middlewares::require_method::operator()(Context &c) const -> awaitable<void> {
     if (c.req().method() == method) {
         co_await c.next();
