@@ -130,15 +130,45 @@ struct brb::Context {
     }
 
     /// get local variable for this context
-    template <typename T>
+    template <typename T = std::string_view>
     const T &get(std::string_view key) const {
-        return std::any_cast<const T &>(vars.at(std::string(key)));
+        auto &value = vars.at(std::string(key));
+
+        if constexpr (std::is_same_v<T, std::string_view>) {
+            std::string_view sv;
+            if (value.type() == typeid(std::string)) {
+                sv = std::any_cast<const std::string &>(value);
+            } else if (value.type() == typeid(const char *)) {
+                sv = std::any_cast<const char *>(value);
+            } else {
+                sv = std::any_cast<std::string_view>(value);
+            }
+
+            return sv;
+        } else {
+            return std::any_cast<const T &>(value);
+        }
     }
 
     /// get local variable for this context
-    template <typename T>
-    T &get(std::string_view key) {
-        return std::any_cast<T &>(vars.at(std::string(key)));
+    template <typename T = std::string_view>
+    decltype(auto) get(std::string_view key) {
+        auto &value = vars.at(std::string(key));
+
+        if constexpr (std::is_same_v<T, std::string_view>) {
+            std::string_view sv;
+            if (value.type() == typeid(std::string)) {
+                sv = std::any_cast<const std::string &>(value);
+            } else if (value.type() == typeid(const char *)) {
+                sv = std::any_cast<const char *>(value);
+            } else {
+                sv = std::any_cast<std::string_view>(value);
+            }
+
+            return sv;
+        } else {
+            return std::any_cast<T &>(value);
+        }
     }
 
     /// get local variable for this context

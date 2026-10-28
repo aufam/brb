@@ -96,7 +96,7 @@ TEST(router, parameter) {
     r.route(brb::http::verb::unknown, "/users/:id", [&](brb::Context &c) -> brb::awaitable<void> {
         n = 1;
 
-        EXPECT_EQ(c.get<std::string>(":id"), "123");
+        EXPECT_EQ(c.get(":id"), "123");
 
         co_return;
     });
@@ -150,7 +150,7 @@ TEST(router, parameter_fallback) {
 
     r.route(brb::http::verb::unknown, "/users/:id", [&](brb::Context &c) -> brb::awaitable<void> {
         n = 2;
-        EXPECT_EQ(c.get<std::string>(":id"), "123");
+        EXPECT_EQ(c.get(":id"), "123");
         co_return;
     });
 
@@ -169,8 +169,8 @@ TEST(router, multiple_parameters) {
     brb::Router r;
 
     r.route(brb::http::verb::unknown, "/users/:user_id/posts/:post_id", [&](brb::Context &c) -> brb::awaitable<void> {
-        EXPECT_EQ(c.get<std::string>(":user_id"), "42");
-        EXPECT_EQ(c.get<std::string>(":post_id"), "100");
+        EXPECT_EQ(c.get(":user_id"), "42");
+        EXPECT_EQ(c.get(":post_id"), "100");
         co_return;
     });
 
