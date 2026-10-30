@@ -387,7 +387,7 @@ auto brb::middlewares::static_files::operator()(Context &c) const -> awaitable<v
     }
 
     auto [path, redirect, entries, is_dir] = match_filepath(c.current_middleware_path, c.url_path, opts);
-    if (path.empty() && !is_dir) {
+    if ((path.empty() && !is_dir) || (is_dir && !opts.directory_listing)) {
         co_await c.next();
         co_return;
     }
