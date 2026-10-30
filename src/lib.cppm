@@ -39,6 +39,9 @@ export namespace brb {
     using boost::beast::http::response_serializer;
     using boost::beast::http::string_body;
 
+    using boost::beast::http::field;
+    using boost::beast::http::verb;
+
     using URL = boost::urls::url;
 } // namespace brb
 
