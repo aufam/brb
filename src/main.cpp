@@ -8,22 +8,42 @@ import fmt;
 import cpx;
 import cpx.cli11;
 
-struct Args {
+struct Serve {
     std::string                directory;
     std::string                host     = "127.0.0.1";
     boost::asio::ip::port_type port     = 3000;
     uint8_t                    parallel = 1;
 
     static constexpr std::tuple __field_tags__ = {
-        cpx::field<&Args::directory> = "directory,positional,help=directory path to serve",
-        cpx::field<&Args::host>      = "host,short=H,skipmissing,help=address to bind the server to",
-        cpx::field<&Args::port>      = "port,short=p,skipmissing,help=port to listen on",
-        cpx::field<&Args::parallel>  = "parallel,short=j,skipmissing,help=number of worker threads",
+        cpx::field<&Serve::directory> = "directory,positional,help=directory path to serve",
+        cpx::field<&Serve::host>      = "host,short=H,skipmissing,help=address to bind the server to",
+        cpx::field<&Serve::port>      = "port,short=p,skipmissing,help=port to listen on",
+        cpx::field<&Serve::parallel>  = "parallel,short=j,skipmissing,help=number of worker threads",
+    };
+};
+
+struct Version {
+    static constexpr std::tuple __field_tags__ = {};
+};
+
+struct Args {
+    std::optional<Serve>   serve;
+    std::optional<Version> version;
+
+    static constexpr std::tuple __field_tags__ = {
+        cpx::field<&Args::serve>   = "serve,help=serve options",
+        cpx::field<&Args::version> = "version,help=print version",
     };
 };
 
 int main(int argc, char **argv) {
     const auto args = cpx::cli11::parse<Args>("brb: Static file serving", argc, argv);
+    if (args.version) {
+        fmt::println("brb version {}", brb::version());
+        return 0;
+    }
+
+    const auto &serve = *args.serve;
 
     boost::asio::io_context io;
     brb::Engine             engine{io};
@@ -38,6 +58,9 @@ int main(int argc, char **argv) {
         } catch (boost::system::system_error &e) {
             fmt::println("[{}:{}] {}", ep.address().to_string(), ep.port(), e.code().message());
             co_return;
+        } catch (std::exception &e) {
+            fmt::println("[{}:{}] {:?}", ep.address().to_string(), ep.port(), e.what());
+            co_return;
         }
 
         const auto &res = c.res();
@@ -45,7 +68,7 @@ int main(int argc, char **argv) {
     };
 
     const auto static_files = brb::middlewares::static_files{
-        .dir               = args.directory,
+        .dir               = serve.directory,
         .spa               = true,
         .directory_listing = true,
         .dotfiles          = true,
@@ -108,19 +131,29 @@ int main(int argc, char **argv) {
         co_await c.write_chunk(brb::Part::dump_end(boundary), false);
     });
 
+    engine.route(brb::http::verb::post, "/multipart", [](brb::Context &c) -> brb::awaitable<void> {
+        while (true) {
+            fmt::println("DEBUG:2");
+            auto part = co_await c.parse_multipart();
+            fmt::println("DEBUG:\n{}\n\n", part.body);
+            if (part.body.empty())
+                break;
+        }
+    });
+
     const auto run_opts = brb::Engine::run_opts{
-        .host                 = args.host,
-        .port                 = args.port,
+        .host                 = serve.host,
+        .port                 = serve.port,
         .cancellation_signals = {SIGINT, SIGTERM},
     };
     boost::asio::co_spawn(io, engine.run(run_opts), boost::asio::detached);
 
     std::vector<std::thread> ts;
-    ts.reserve(args.parallel);
-    for (uint8_t i = 0; i < args.parallel; ++i)
+    ts.reserve(serve.parallel);
+    for (uint8_t i = 0; i < serve.parallel; ++i)
         ts.emplace_back([&]() { io.run(); });
 
-    for (uint8_t i = 0; i < args.parallel; ++i)
+    for (uint8_t i = 0; i < serve.parallel; ++i)
         ts[i].join();
 
     return 0;

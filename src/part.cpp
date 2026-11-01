@@ -1,160 +1,242 @@
 module;
 
+#include <boost/asio.hpp>
 #include <boost/beast/http.hpp>
-#include <boost/asio/use_awaitable.hpp>
 
 module brb;
 
+
+enum MultipartState {
+    InitialBoundary = 0,
+    Headers,
+    Body,
+    BoundarySuffix,
+    Done,
+};
+
 static std::optional<brb::Part>
-feed_part(std::string_view input, std::string &buffer, bool &headers_done, const std::string &boundary, brb::Part &part) {
+feed_part(std::string_view input, std::string &buffer, int &state, const std::string &boundary, brb::Part &part) {
     buffer.append(input);
 
-    const std::string delimiter = "\r\n--" + boundary;
+    const std::string initial = "--" + boundary;
+    const std::string marker  = "\n--" + boundary;
 
-    // ------------------------------------------------------------
-    // Parse part headers.
-    // ------------------------------------------------------------
-    if (!headers_done) {
-        const auto header_end = buffer.find("\r\n\r\n");
+    for (;;) {
+        // --------------------------------------------------------
+        // Initial boundary.
+        // --------------------------------------------------------
+        if (state == MultipartState::InitialBoundary) {
+            if (buffer.size() < initial.size()) {
+                if (initial.compare(0, buffer.size(), buffer) != 0)
+                    throw std::runtime_error("Invalid initial multipart boundary: buffer = " + buffer);
 
-        if (header_end == std::string::npos)
-            return std::nullopt;
-
-        std::string_view header_block{buffer.data(), header_end};
-
-        std::size_t pos = 0;
-
-        while (pos < header_block.size()) {
-            const auto line_end = header_block.find("\r\n", pos);
-
-            if (line_end == std::string_view::npos)
-                throw std::runtime_error("Invalid multipart header");
-
-            const auto line = header_block.substr(pos, line_end - pos);
-
-            if (!line.empty()) {
-                const auto colon = line.find(':');
-
-                if (colon == std::string_view::npos)
-                    throw std::runtime_error("Invalid multipart header");
-
-                auto name  = line.substr(0, colon);
-                auto value = line.substr(colon + 1);
-
-                // OWS after ':'.
-                while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
-                    value.remove_prefix(1);
-                }
-
-                // OWS before the end.
-                while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) {
-                    value.remove_suffix(1);
-                }
-
-                part.fields.set(name, value);
+                return std::nullopt;
             }
 
-            pos = line_end + 2;
+            if (buffer.compare(0, initial.size(), initial) != 0)
+                throw std::runtime_error("Invalid initial multipart boundary: buffer = " + buffer);
+
+            buffer.erase(0, initial.size());
+
+            if (buffer.size() < 1)
+                return std::nullopt;
+
+            if (buffer.starts_with("--")) {
+                buffer.erase(0, 2);
+                state = MultipartState::Done;
+                return std::nullopt;
+            }
+
+            if (buffer.starts_with("\r\n")) {
+                buffer.erase(0, 2);
+            } else if (buffer.starts_with("\n")) {
+                buffer.erase(0, 1);
+            } else {
+                if (buffer == "\r")
+                    return std::nullopt;
+
+                throw std::runtime_error("Invalid initial multipart boundary: buffer = " + buffer);
+            }
+
+            state = MultipartState::Headers;
         }
 
-        // Remove:
-        //
-        //   headers\r\n
-        //   \r\n
-        //
-        buffer.erase(0, header_end + 4);
+        // --------------------------------------------------------
+        // Part headers.
+        // --------------------------------------------------------
+        if (state == MultipartState::Headers) {
+            auto        header_end     = buffer.find("\r\n\r\n");
+            std::size_t separator_size = 4;
 
-        headers_done = true;
-    }
+            const auto lf_end = buffer.find("\n\n");
 
-    // ------------------------------------------------------------
-    // Find the next part boundary.
-    //
-    // We search for:
-    //
-    //   \r\n--boundary
-    //
-    // because the CRLF immediately before the boundary belongs to
-    // the multipart framing, not the part body.
-    // ------------------------------------------------------------
+            if (lf_end != std::string::npos && (header_end == std::string::npos || lf_end < header_end)) {
+                header_end     = lf_end;
+                separator_size = 2;
+            }
 
-    const auto boundary_pos = buffer.find(delimiter);
+            if (header_end == std::string::npos)
+                return std::nullopt;
 
-    if (boundary_pos == std::string::npos) {
-        // The boundary may be split across the next input chunk.
-        //
-        // Keep enough bytes at the end of `buffer` to detect such
-        // a split boundary.
-        const auto keep = delimiter.size() - 1;
+            std::string_view headers{buffer.data(), header_end};
 
-        if (buffer.size() > keep) {
-            const auto n = buffer.size() - keep;
+            std::size_t pos = 0;
 
-            part.body.append(buffer.data(), n);
-            buffer.erase(0, n);
+            while (pos < headers.size()) {
+                auto end = headers.find('\n', pos);
+
+                if (end == std::string_view::npos)
+                    end = headers.size();
+
+                auto line = headers.substr(pos, end - pos);
+
+                if (!line.empty() && line.back() == '\r')
+                    line.remove_suffix(1);
+
+                if (!line.empty()) {
+                    const auto colon = line.find(':');
+
+                    if (colon == std::string_view::npos)
+                        throw std::runtime_error("Invalid multipart header: " + std::string(line));
+
+                    auto name  = line.substr(0, colon);
+                    auto value = line.substr(colon + 1);
+
+                    while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
+                        value.remove_prefix(1);
+
+                    while (!value.empty() && (value.back() == ' ' || value.back() == '\t'))
+                        value.remove_suffix(1);
+
+                    part.fields.set(name, value);
+                }
+
+                pos = end + (end < headers.size() ? 1 : 0);
+            }
+
+            buffer.erase(0, header_end + separator_size);
+            state = MultipartState::Body;
         }
 
-        return std::nullopt;
+        // --------------------------------------------------------
+        // Part body.
+        // --------------------------------------------------------
+        if (state == MultipartState::Body) {
+            const auto pos = buffer.find(marker);
+
+            if (pos == std::string::npos) {
+                // Keep enough bytes to detect a split boundary.
+                // One extra byte preserves a possible CR before LF.
+                const auto keep = marker.size();
+
+                if (buffer.size() > keep) {
+                    const auto n = buffer.size() - keep;
+
+                    part.body.append(buffer.data(), n);
+                    buffer.erase(0, n);
+                }
+
+                return std::nullopt;
+            }
+
+            const auto suffix = pos + marker.size();
+
+            // Wait until we can determine whether this is a
+            // valid boundary.
+            if (suffix >= buffer.size())
+                return std::nullopt;
+
+            const auto next = buffer[suffix];
+
+            bool        final_boundary = false;
+            std::size_t suffix_size    = 0;
+
+            if (next == '-') {
+                if (buffer.size() < suffix + 2)
+                    return std::nullopt;
+
+                if (buffer[suffix + 1] != '-') {
+                    // Not a valid boundary. Continue searching.
+                    part.body.append(buffer.data(), pos + 1);
+                    buffer.erase(0, pos + 1);
+                    continue;
+                }
+
+                final_boundary = true;
+                suffix_size    = 2;
+            } else if (next == '\n') {
+                suffix_size = 1;
+            } else if (next == '\r') {
+                if (buffer.size() < suffix + 2)
+                    return std::nullopt;
+
+                if (buffer[suffix + 1] != '\n') {
+                    part.body.append(buffer.data(), pos + 1);
+                    buffer.erase(0, pos + 1);
+                    continue;
+                }
+
+                suffix_size = 2;
+            } else {
+                // Boundary-like text inside the actual body.
+                part.body.append(buffer.data(), pos + 1);
+                buffer.erase(0, pos + 1);
+                continue;
+            }
+
+            // Exclude the framing newline from the part body.
+            auto body_size = pos;
+
+            if (body_size > 0 && buffer[body_size - 1] == '\r')
+                --body_size;
+
+            part.body.append(buffer.data(), body_size);
+
+            buffer.erase(0, suffix + suffix_size);
+
+            state = final_boundary ? MultipartState::Done : MultipartState::Headers;
+
+            return brb::Part{
+                .fields = std::move(part.fields),
+                .body   = std::move(part.body),
+            };
+        }
+
+        // --------------------------------------------------------
+        // Done.
+        // --------------------------------------------------------
+        if (state == MultipartState::Done)
+            return std::nullopt;
     }
-
-    // Everything before "\r\n--boundary" is body.
-    part.body.append(buffer.data(), boundary_pos);
-
-    // Remove body + "\r\n--boundary".
-    buffer.erase(0, boundary_pos + delimiter.size());
-
-    // At this point buffer must contain either:
-    //
-    //   \r\n       -> another part follows
-    //
-    // or
-    //
-    //   --        -> final boundary
-    //
-    if (buffer.size() < 2)
-        return std::nullopt;
-
-    if (buffer.compare(0, 2, "--") == 0) {
-        // Final boundary:
-        //
-        // \r\n--boundary--
-        //
-        buffer.erase(0, 2);
-
-        return brb::Part{
-            .fields = std::move(part.fields),
-            .body   = std::move(part.body),
-        };
-    }
-
-    if (buffer.compare(0, 2, "\r\n") == 0) {
-        // Another part follows.
-        buffer.erase(0, 2);
-
-        return brb::Part{
-            .fields = std::move(part.fields),
-            .body   = std::move(part.body),
-        };
-    }
-
-    throw std::runtime_error("Invalid multipart boundary");
 }
 
 auto brb::Context::parse_multipart() -> awaitable<Part> {
-    auto &parser = parser_buffer();
+    auto &parser = parser_string();
 
-    char         buffer[8192];
+    // char buffer[8192];
+
     flat_buffer &flat_buffer = this->buffer;
 
     for (;;) {
-        parser.get().body().data = buffer;
-        parser.get().body().size = sizeof(buffer);
+        // parser.get().body().data = buffer;
+        // parser.get().body().size = sizeof(buffer);
 
-        co_await http::async_read_some(*stream, flat_buffer, parser);
+        boost::system::error_code ec;
 
-        std::string_view input(buffer, sizeof(buffer) - parser.get().body().size);
-        if (auto result = feed_part(input, stream_buffer, part_state, multipart_boundary, part))
+        co_await http::async_read_some(*stream, flat_buffer, parser, boost::asio::redirect_error(ec));
+
+        if (ec && ec != http::error::need_buffer)
+            throw boost::system::system_error(ec);
+
+        // std::string_view input(buffer, sizeof(buffer) - parser.get().body().size());
+
+        if (auto result = feed_part(parser.get().body(), stream_buffer, part_state, multipart_boundary, part)) {
+            part = {};
             co_return std::move(*result);
+        }
+
+        if (part_state == MultipartState::Done)
+            throw std::runtime_error("No more multipart parts");
 
         if (parser.is_done())
             throw std::runtime_error("Multipart stream ended before a complete part");

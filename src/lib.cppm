@@ -14,6 +14,8 @@ export namespace brb {
     struct Part;
     using Handler = std::function<boost::asio::awaitable<void>(Context &)>;
 
+    extern "C++" const char *version();
+
     namespace asio  = boost::asio;
     namespace beast = boost::beast;
     namespace http  = boost::beast::http;
@@ -33,14 +35,41 @@ export namespace brb {
     using boost::beast::http::buffer_body;
     using boost::beast::http::empty_body;
     using boost::beast::http::file_body;
-    using boost::beast::http::request;
-    using boost::beast::http::request_parser;
-    using boost::beast::http::response;
-    using boost::beast::http::response_serializer;
     using boost::beast::http::string_body;
 
+    using boost::beast::http::message;
+    using boost::beast::http::parser;
+    using boost::beast::http::serializer;
+
+    using boost::beast::http::request;
+    using boost::beast::http::request_parser;
+    using boost::beast::http::request_serializer;
+    using boost::beast::http::response;
+    using boost::beast::http::response_parser;
+    using boost::beast::http::response_serializer;
+
     using boost::beast::http::field;
+    using boost::beast::http::fields;
+    using boost::beast::http::status;
     using boost::beast::http::verb;
+
+    using boost::beast::http::string_to_field;
+    using boost::beast::http::string_to_verb;
+    using boost::beast::http::to_string;
+
+    using boost::beast::http::async_read;
+    using boost::beast::http::async_read_some;
+    using boost::beast::http::async_write;
+    using boost::beast::http::async_write_some;
+    using boost::beast::http::read;
+    using boost::beast::http::read_some;
+    using boost::beast::http::write;
+    using boost::beast::http::write_some;
+
+    using boost::beast::http::async_read_header;
+    using boost::beast::http::async_write_header;
+    using boost::beast::http::read_header;
+    using boost::beast::http::write_header;
 
     using URL = boost::urls::url;
 } // namespace brb
@@ -124,7 +153,7 @@ struct brb::Context {
     URL                         url;                ///< parsed url from request header
     std::string                 url_path;           ///< string view to decoded url path
     std::string                 multipart_boundary; ///< parsed multipart_boundary
-    std::string_view            current_middleware_path;
+    std::string_view            matched_path;       ///< currently matched path that being processed by a handler
 
     /// set local variable for this context
     template <typename T>
@@ -134,7 +163,7 @@ struct brb::Context {
 
     /// get local variable for this context
     template <typename T = std::string_view>
-    const T &get(std::string_view key) const {
+    decltype(auto) get(std::string_view key) const {
         auto &value = vars.at(std::string(key));
 
         if constexpr (std::is_same_v<T, std::string_view>) {
@@ -177,9 +206,8 @@ struct brb::Context {
     /// get local variable for this context
     template <typename T>
     T get_or(std::string_view key, T default_value) const {
-        if (auto it = vars.find(std::string(key)); it != vars.end()) {
-            return std::any_cast<const T &>(it->second);
-        }
+        if (vars.count(std::string(key)))
+            return get(key);
         return std::move(default_value);
     }
 
@@ -216,12 +244,12 @@ struct brb::Context {
         if (aborted || idx >= handlers.size())
             co_return;
 
-        const auto md = current_middleware_path;
+        const auto mp = matched_path;
 
-        auto [middleware_path, fn] = handlers[idx++];
-        defer _                    = [&]() { current_middleware_path = md; };
+        auto [path, fn] = handlers[idx++];
+        defer _         = [&]() { matched_path = mp; };
 
-        current_middleware_path = middleware_path;
+        matched_path = path;
         co_await fn(*this);
     }
 
@@ -575,7 +603,6 @@ private:
     std::unordered_map<std::string, std::any>         vars;
     std::vector<std::pair<std::string_view, Handler>> handlers;
     size_t                                            idx     = 0;
-    size_t                                            level   = 0;
     bool                                              aborted = false;
 
     SSE         sse;
@@ -583,8 +610,8 @@ private:
     std::string stream_buffer;
 
     union {
-        bool part_state = false; // false = header, true = body
-        bool sse_has_data;       // false = header, true = body
+        int  part_state = 0;
+        bool sse_has_data;
     };
 };
 
@@ -624,8 +651,7 @@ export namespace brb::middlewares {
         std::vector<http::field> headers;
 
         std::chrono::seconds max_age{};
-        bool                 credentials    = false;
-        bool                 write_response = true;
+        bool                 credentials = false;
 
         awaitable<void> operator()(Context &) const;
 
