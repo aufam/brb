@@ -99,6 +99,11 @@ int main(int argc, char **argv) {
         co_return;
     });
 
+    api.route(brb::verb::post, "/echo", [](brb::Context &c) -> brb::awaitable<void> {
+        c.response_string().body() = c.parser_string().get().body();
+        co_return;
+    });
+
     engine.route(brb::http::verb::get, "/stream", [](brb::Context &c) -> brb::awaitable<void> {
         c.set_event_stream();
         brb::SSE sse;
@@ -114,32 +119,32 @@ int main(int argc, char **argv) {
         co_await c.write_chunk(body, false);
     });
 
-    engine.route(brb::http::verb::get, "/multipart", [](brb::Context &c) -> brb::awaitable<void> {
-        const std::string boundary = "boundary";
-        c.set_multipart_stream(boundary);
-        brb::Part part;
-
-        // hello
-        part.fields.set(brb::http::field::content_type, "text/plain");
-        part.body = "hello";
-        co_await c.write_chunk(part.dump(boundary), true);
-
-        // world
-        part.body = "world";
-        co_await c.write_chunk(part.dump(boundary), true);
-
-        co_await c.write_chunk(brb::Part::dump_end(boundary), false);
-    });
-
-    engine.route(brb::http::verb::post, "/multipart", [](brb::Context &c) -> brb::awaitable<void> {
-        while (true) {
-            fmt::println("DEBUG:2");
-            auto part = co_await c.parse_multipart();
-            fmt::println("DEBUG:\n{}\n\n", part.body);
-            if (part.body.empty())
-                break;
-        }
-    });
+    // engine.route(brb::http::verb::get, "/multipart", [](brb::Context &c) -> brb::awaitable<void> {
+    //     const std::string boundary = "boundary";
+    //     c.set_multipart_stream(boundary);
+    //     brb::Part part;
+    //
+    //     // hello
+    //     part.fields.set(brb::http::field::content_type, "text/plain");
+    //     part.body = "hello";
+    //     co_await c.write_chunk(part.dump(boundary), true);
+    //
+    //     // world
+    //     part.body = "world";
+    //     co_await c.write_chunk(part.dump(boundary), true);
+    //
+    //     co_await c.write_chunk(brb::Part::dump_end(boundary), false);
+    // });
+    //
+    // engine.route(brb::http::verb::post, "/multipart", [](brb::Context &c) -> brb::awaitable<void> {
+    //     while (true) {
+    //         fmt::println("DEBUG:2");
+    //         auto part = co_await c.parse_multipart();
+    //         fmt::println("DEBUG:\n{}\n\n", part.body);
+    //         if (part.body.empty())
+    //             break;
+    //     }
+    // });
 
     const auto run_opts = brb::Engine::run_opts{
         .host                 = serve.host,

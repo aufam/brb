@@ -115,8 +115,7 @@ void brb::Engine::close() {
 }
 
 std::string get_multipart_boundary(std::string_view content_type) {
-    const auto value = content_type;
-
+    const auto                 value  = content_type;
     constexpr std::string_view prefix = "multipart/";
 
     // Must be multipart/*.
@@ -130,8 +129,15 @@ std::string get_multipart_boundary(std::string_view content_type) {
             return {};
     }
 
+    // The media type may contain a subtype (e.g. `multipart/form-data`);
+    // limit parsing to the parameters after the first ';'.
+    const auto semicolon = value.find(';');
+
+    if (semicolon == std::string_view::npos)
+        return {};
+
     // Find `boundary=`.
-    std::string_view parameters = value.substr(prefix.size());
+    std::string_view parameters = value.substr(semicolon);
 
     while (!parameters.empty()) {
         // Skip whitespace and semicolons.

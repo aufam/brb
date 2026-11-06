@@ -103,18 +103,14 @@ brb::date::time_point brb::date::parse(std::string_view value) {
 
     // Check that converting the date didn't normalize an invalid
     // day/month combination.
-    if (civil_from_days(days)[0] != year || civil_from_days(days)[1] != month ||
-        civil_from_days(days)[2] != day)
+    if (civil_from_days(days)[0] != year || civil_from_days(days)[1] != month || civil_from_days(days)[2] != day)
         throw std::runtime_error("invalid day");
 
-    return std::chrono::system_clock::time_point{
-        std::chrono::seconds{static_cast<std::int64_t>(days) * 86400 + hour * 3600 + minute * 60 + second}
-    };
+    return time_point{std::chrono::seconds{static_cast<std::int64_t>(days) * 86400 + hour * 3600 + minute * 60 + second}};
 }
 
-std::string brb::date::format(std::chrono::system_clock::time_point tp) {
-    const auto time     = std::chrono::time_point_cast<std::chrono::seconds>(tp);
-    const auto duration = time.time_since_epoch();
+std::string brb::date::format(brb::date::time_point tp) {
+    const auto duration = tp.time_since_epoch();
     const auto seconds  = std::chrono::duration_cast<std::chrono::seconds>(duration).count();
 
     // Convert Unix timestamp to civil date.

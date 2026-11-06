@@ -11,7 +11,7 @@ export namespace brb {
     struct Router;
     struct Context;
     struct SSE;
-    struct Part;
+    // struct Part;
     using Handler = std::function<boost::asio::awaitable<void>(Context &)>;
 
     extern "C++" const char *version();
@@ -24,6 +24,9 @@ export namespace brb {
 
     using boost::asio::awaitable;
     using boost::asio::ip::tcp;
+
+    using boost::asio::buffer;
+    using boost::beast::buffers_to_string;
     using boost::beast::flat_buffer;
 
     using boost::beast::tcp_stream;
@@ -137,13 +140,13 @@ struct brb::SSE {
     std::string dump() const;
 };
 
-struct brb::Part {
-    http::fields fields;
-    std::string  body;
-
-    std::string        dump(const std::string &boundary) const;
-    static std::string dump_end(const std::string &boundary);
-};
+// struct brb::Part {
+//     http::fields fields;
+//     std::string  body;
+//
+//     std::string        dump(const std::string &boundary) const;
+//     static std::string dump_end(const std::string &boundary);
+// };
 
 struct brb::Context {
     friend Engine;
@@ -504,8 +507,8 @@ struct brb::Context {
         append_vary(http::to_string(value));
     }
 
-    awaitable<SSE>  parse_sse();
-    awaitable<Part> parse_multipart();
+    awaitable<SSE> parse_sse();
+    // awaitable<Part> parse_multipart();
 
     /// @brief Configures the response for Server-Sent Events (SSE).
     ///
@@ -606,7 +609,7 @@ private:
     bool                                              aborted = false;
 
     SSE         sse;
-    Part        part;
+    // Part        part;
     std::string stream_buffer;
 
     union {
