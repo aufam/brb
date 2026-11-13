@@ -71,18 +71,44 @@ auto brb::Engine::run(const run_opts &opts) -> awaitable<void> {
     }
 }
 
-auto brb::Engine::async_work(std::shared_ptr<tcp_stream> stream) -> awaitable<void> {
-    {
-        auto lock = std::unique_lock<std::mutex>(mtx);
-        streams.push_back(stream);
-    };
-    defer _ = [&]() {
-        auto lock = std::unique_lock<std::mutex>(mtx);
-        auto it   = std::remove_if(streams.begin(), streams.end(), [&](auto &s) { return s == stream; });
-        streams.erase(it, streams.end());
-    };
+bool brb::Engine::is_stopped() const {
+    auto lock = std::unique_lock<std::mutex>(mtx);
+    return stoppped;
+}
 
-    while (true)
+void brb::Engine::add(std::shared_ptr<tcp_stream> stream) {
+    auto lock = std::unique_lock<std::mutex>(mtx);
+    streams.push_back(stream);
+}
+
+void brb::Engine::add(std::shared_ptr<ws_stream> stream) {
+    auto lock = std::unique_lock<std::mutex>(mtx);
+    ws_streams.push_back(stream);
+}
+
+void brb::Engine::remove(std::shared_ptr<tcp_stream> stream) {
+    auto lock = std::unique_lock<std::mutex>(mtx);
+    auto it   = std::remove_if(streams.begin(), streams.end(), [&](auto &s) { return s == stream; });
+    streams.erase(it, streams.end());
+}
+
+void brb::Engine::remove(std::shared_ptr<ws_stream> stream) {
+    auto lock = std::unique_lock<std::mutex>(mtx);
+    auto it   = std::remove_if(ws_streams.begin(), ws_streams.end(), [&](auto &s) { return s == stream; });
+    ws_streams.erase(it, ws_streams.end());
+}
+
+auto brb::Engine::async_work(std::shared_ptr<tcp_stream> stream) -> awaitable<void> {
+    add(stream);
+    defer _ = [&]() { remove(stream); };
+
+    while (true) {
+        {
+            auto lock = std::unique_lock<std::mutex>(mtx);
+            if (stoppped)
+                break;
+        }
+
         try {
             bool keep_alive = co_await handle(stream);
             if (!keep_alive)
@@ -91,6 +117,7 @@ auto brb::Engine::async_work(std::shared_ptr<tcp_stream> stream) -> awaitable<vo
             std::ignore = e;
             break;
         }
+    }
 }
 
 auto brb::Engine::async_cancel(const std::vector<int> &cancellation_signals) -> awaitable<void> {
@@ -110,8 +137,15 @@ void brb::Engine::close() {
     }
 
     auto lock = std::unique_lock<std::mutex>(mtx);
-    for (auto &s : streams)
+    stoppped  = true;
+
+    for (auto &s : streams) {
         s->close();
+    }
+    for (auto &s : ws_streams) {
+        boost::system::error_code ec;
+        s->close(brb::ws::close_code::normal, ec);
+    }
 }
 
 std::string get_multipart_boundary(std::string_view content_type) {

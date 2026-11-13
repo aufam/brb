@@ -738,6 +738,16 @@ struct brb::Engine : Router {
     /// close acceptor and all streams
     void close();
 
+    bool is_stopped() const;
+
+    /// add a connection to be managed by the engine
+    void add(std::shared_ptr<tcp_stream>);
+    void add(std::shared_ptr<ws_stream>);
+
+    /// remove a connection to be managed by the engine
+    void remove(std::shared_ptr<tcp_stream>);
+    void remove(std::shared_ptr<ws_stream>);
+
 protected:
     auto async_work(std::shared_ptr<tcp_stream> stream) -> awaitable<void>;
     auto async_cancel(const std::vector<int> &cancellation_signals) -> awaitable<void>;
@@ -747,4 +757,8 @@ protected:
     asio::ip::tcp::acceptor                          acceptor;
     mutable std::mutex                               mtx;
     mutable std::vector<std::shared_ptr<tcp_stream>> streams;
+    mutable std::vector<std::shared_ptr<ws_stream>>  ws_streams;
+
+    bool is_running{false};
+    bool stoppped{false};
 };
