@@ -62,5 +62,5 @@ brb::awaitable<void> brb::middlewares::brotli::operator()(Context &c) const {
     brb::brotli::compress(res.body());
 
     res.set(http::field::content_encoding, "br");
-    c.append_vary(http::field::accept_encoding);
+    c.vary(http::field::accept_encoding);
 }

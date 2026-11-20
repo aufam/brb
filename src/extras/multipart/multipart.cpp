@@ -1,7 +1,7 @@
 module;
 
 #include <boost/asio.hpp>
-#include <boost/beast/http.hpp>
+#include <boost/beast.hpp>
 
 module brb.multipart;
 

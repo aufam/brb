@@ -7,7 +7,7 @@ module;
 module brb;
 
 
-static std::string_view trim(std::string_view value) {
+std::string_view brb::trim(std::string_view value) {
     while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front()))) {
         value.remove_prefix(1);
     }
@@ -19,7 +19,7 @@ static std::string_view trim(std::string_view value) {
     return value;
 }
 
-static bool iequals(std::string_view a, std::string_view b) {
+bool brb::iequals(std::string_view a, std::string_view b) {
     if (a.size() != b.size())
         return false;
 
@@ -36,14 +36,14 @@ static bool q_zero(std::string_view params) {
     while (!params.empty()) {
         const auto semi = params.find(';');
 
-        auto       param = trim(params.substr(0, semi));
+        auto       param = brb::trim(params.substr(0, semi));
         const auto eq    = param.find('=');
 
         if (eq != std::string_view::npos) {
-            auto name  = trim(param.substr(0, eq));
-            auto value = trim(param.substr(eq + 1));
+            auto name  = brb::trim(param.substr(0, eq));
+            auto value = brb::trim(param.substr(eq + 1));
 
-            if (iequals(name, "q") && !value.empty() && value.front() == '0')
+            if (brb::iequals(name, "q") && !value.empty() && value.front() == '0')
                 return true;
         }
 
@@ -57,14 +57,14 @@ static bool q_zero(std::string_view params) {
 }
 
 static bool matches_media_type(std::string_view accepted, std::string_view requested) {
-    if (iequals(accepted, requested))
+    if (brb::iequals(accepted, requested))
         return true;
 
     // application/* matches application/json
     if (accepted.ends_with("/*")) {
         const auto slash = accepted.find('/');
         if (slash != std::string_view::npos) {
-            return requested.size() > slash && iequals(accepted.substr(0, slash), requested.substr(0, slash));
+            return requested.size() > slash && brb::iequals(accepted.substr(0, slash), requested.substr(0, slash));
         }
     }
 
@@ -73,7 +73,7 @@ static bool matches_media_type(std::string_view accepted, std::string_view reque
 }
 
 static bool matches_encoding(std::string_view accepted, std::string_view requested) {
-    return iequals(accepted, requested) || accepted == "*";
+    return brb::iequals(accepted, requested) || accepted == "*";
 }
 
 template <typename Matcher>
@@ -81,10 +81,10 @@ static bool accepts_header(std::string_view header, std::string_view requested, 
     while (!header.empty()) {
         const auto comma = header.find(',');
 
-        auto       item = trim(header.substr(0, comma));
+        auto       item = brb::trim(header.substr(0, comma));
         const auto semi = item.find(';');
 
-        auto value = trim(item.substr(0, semi));
+        auto value = brb::trim(item.substr(0, semi));
 
         auto params = semi == std::string_view::npos ? std::string_view{} : item.substr(semi + 1);
 

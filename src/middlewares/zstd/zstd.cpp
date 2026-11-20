@@ -78,5 +78,5 @@ brb::awaitable<void> brb::middlewares::zstd::operator()(Context &c) const {
     brb::zstd::compress(res.body());
 
     res.set(http::field::content_encoding, "zstd");
-    c.append_vary(http::field::accept_encoding);
+    c.vary(http::field::accept_encoding);
 }

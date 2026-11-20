@@ -146,7 +146,7 @@ auto brb::middlewares::cors::operator()(Context &c) const -> awaitable<void> {
         res.set(http::field::access_control_allow_origin, "*");
     else
         res.set(http::field::access_control_allow_origin, origin);
-    c.append_vary(http::field::origin);
+    c.vary(http::field::origin);
 
     if (credentials)
         res.set(http::field::access_control_allow_credentials, "true");

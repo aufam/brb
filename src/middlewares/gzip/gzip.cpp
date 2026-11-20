@@ -110,5 +110,5 @@ auto brb::middlewares::gzip::operator()(Context &c) const -> awaitable<void> {
 
     brb::gzip::compress(res.body());
     res.set(http::field::content_encoding, "gzip");
-    c.append_vary(http::field::accept_encoding);
+    c.vary(http::field::accept_encoding);
 }

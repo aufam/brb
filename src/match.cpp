@@ -5,6 +5,19 @@ module;
 
 module brb;
 
+auto brb::Context::next() -> awaitable<void> {
+    if (aborted || idx >= handlers.size())
+        co_return;
+
+    const auto mp = matched_path;
+
+    auto [path, fn] = handlers[idx++];
+    defer _         = [&]() { matched_path = mp; };
+
+    matched_path = path;
+    co_await fn(*this);
+}
+
 void brb::Context::match(const Router &r) {
     PathCursor    cursor(url_path);
     const Router *node = &r;
