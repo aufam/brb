@@ -35,6 +35,9 @@ export namespace brb {
     using request_header  = boost::beast::http::request_header<boost::beast::http::fields>;
     using response_header = boost::beast::http::response_header<boost::beast::http::fields>;
 
+    using boost::beast::file;
+    using boost::beast::file_mode;
+
     using boost::beast::http::buffer_body;
     using boost::beast::http::empty_body;
     using boost::beast::http::file_body;
@@ -76,6 +79,16 @@ export namespace brb {
     using boost::beast::http::write_header;
 
     using URL = boost::urls::url;
+
+    struct ParsedOptionsHeader {
+        std::string_view                                  value;
+        std::unordered_map<std::string_view, std::string> params;
+        std::string_view                                  next;
+    };
+    ParsedOptionsHeader parse_options_header(std::string_view sv) noexcept;
+
+    std::string_view mime_type(std::string_view extension);
+    std::string_view file_extension(std::string_view mime_type);
 } // namespace brb
 
 struct brb::SSE {
@@ -172,11 +185,13 @@ struct brb::Context {
     ///         filepath, or if the file cannot be opened or written.
     response<file_body> &response_file(const std::string &filepath = "");
 
-    /// Get the response as a buffer-body response.
+    /// Get a pair of response buffer-body and its serializer
     ///
     /// An empty body is converted directly. Other body types cannot be converted
     /// because buffer_body does not own the memory referenced by its buffer.
-    response<buffer_body> &response_buffer();
+    ///
+    /// The serializer is created on first use.
+    std::pair<response<buffer_body> &, response_serializer<buffer_body> &> response_buffer();
 
     /// get request parser as empty-body request
     request_parser<empty_body> &parser_empty();
@@ -228,10 +243,11 @@ struct brb::Context {
     ///
     /// Sets the content type to `text/event-stream` and enables HTTP chunked
     /// transfer encoding for streaming events.
-    void set_event_stream() {
-        auto &res = response_buffer();
+    std::pair<response<buffer_body> &, response_serializer<buffer_body> &> set_event_stream() {
+        auto [res, ser] = response_buffer();
         res.set(field::content_type, "text/event-stream");
         res.chunked(true);
+        return {res, ser};
     }
 
     /// @brief Configures the response for a multipart stream.
@@ -240,10 +256,12 @@ struct brb::Context {
     /// and enables HTTP chunked transfer encoding for streaming parts.
     ///
     /// @param boundary The boundary used to separate multipart body parts.
-    void set_multipart_stream(std::string_view boundary, const std::string &multipart_mime = "mixed") {
-        auto &res = response_buffer();
+    std::pair<response<buffer_body> &, response_serializer<buffer_body> &>
+    set_multipart_stream(std::string_view boundary, const std::string &multipart_mime = "mixed") {
+        auto [res, ser] = response_buffer();
         res.set(field::content_type, "multipart/" + multipart_mime + "; boundary=" + std::string(boundary));
         res.chunked(true);
+        return {res, ser};
     }
 
     /// @brief Writes a chunk of the response body using a streaming serializer.
@@ -276,7 +294,7 @@ private:
     using string_parser_t = std::unique_ptr<request_parser<string_body>>;
     using file_parser_t   = std::unique_ptr<request_parser<file_body>>;
     using buffer_parser_t = std::unique_ptr<request_parser<buffer_body>>;
-    using serializer_t    = std::unique_ptr<response_serializer<buffer_body>>;
+    using serializer_t    = std::unique_ptr<http::response_serializer<buffer_body>>;
 
     std::variant<empty_parser_t, string_parser_t, file_parser_t, buffer_parser_t>                         parser;
     std::variant<response<empty_body>, response<string_body>, response<file_body>, response<buffer_body>> r;
@@ -415,10 +433,9 @@ protected:
 
 export namespace brb::middlewares {
     struct request_reader {
-        bool        string_body = false;
-        bool        file_body   = false;
-        bool        temp_file   = false;
-        std::string file_path   = "";
+        bool string_body = false;
+        bool file_body   = false;
+        bool temp_file   = false;
 
         awaitable<void> operator()(Context &) const;
     };

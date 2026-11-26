@@ -2,6 +2,7 @@ module;
 
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
+#include <filesystem>
 
 module brb.multipart;
 
@@ -14,6 +15,78 @@ namespace {
         Body,
         Done,
     };
+
+    struct BodyAppend {
+        const char *data;
+        size_t      len;
+
+        void operator()(std::string &body) {
+            body.append(data, len);
+        }
+
+        void operator()(brb::file &body) {
+            boost::beast::error_code ec;
+            body.write(data, len, ec);
+
+            if (ec)
+                throw boost::beast::system_error(ec);
+        }
+    };
+
+    struct BodyRead {
+        std::string &out;
+
+        void operator()(const std::string &body) {
+            out += body;
+        }
+
+        void operator()(const brb::file &body) {
+            boost::beast::error_code ec;
+
+            std::string temp;
+            temp.resize(body.size(ec));
+
+            if (ec)
+                throw boost::beast::system_error(ec);
+
+            body.read(temp.data(), temp.size(), ec);
+
+            if (ec)
+                throw boost::beast::system_error(ec);
+
+            out += temp;
+        }
+    };
+
+    struct BodyLen {
+        size_t operator()(const std::string &body) {
+            return body.size();
+        }
+
+        size_t operator()(const brb::file &body) {
+            boost::beast::error_code ec;
+
+            auto ret = body.size(ec);
+            if (ec)
+                throw boost::beast::system_error(ec);
+
+            return ret;
+        }
+    };
+} // namespace
+
+size_t brb::multipart::Part::size(std::string_view boundary, bool more) const {
+    size_t ret = 2 + boundary.size() + 2; // -- + boundary + crlf
+
+    for (auto const &field : headers)
+        ret += field.name_string().size() + 2 + field.value().size() + 2; // name + colon + value + crlf
+
+    ret += 2 + std::visit(BodyLen{}, body) + 2; // crlf + body + crlf
+
+    if (!more)
+        ret = 2 + boundary.size() + 2 + 2; // -- + boundary + -- + crlf
+
+    return ret;
 }
 
 bool brb::multipart::Parser::done() const {
@@ -22,10 +95,6 @@ bool brb::multipart::Parser::done() const {
 
 auto brb::multipart::Parser::get() -> awaitable<std::pair<Part, std::string>> {
     char buffer[8192];
-
-    tcp_stream  &stream      = *c.stream;
-    flat_buffer &flat_buffer = c.buffer;
-    auto        &parser      = c.parser_buffer();
 
     std::pair<Part, std::string> ret;
     for (;;) {
@@ -39,13 +108,13 @@ auto brb::multipart::Parser::get() -> awaitable<std::pair<Part, std::string>> {
 
         boost::system::error_code ec;
 
-        co_await async_read_some(stream, flat_buffer, parser, boost::asio::redirect_error(ec));
+        auto len = co_await async_read_some(stream, flat_buffer, parser, boost::asio::redirect_error(ec));
         if (ec && ec != http::error::need_buffer)
             throw boost::system::system_error(ec);
 
         /// bytes placed into the body buffer by this read; the async_read_some
         /// return value counts wire bytes (e.g. chunk framing), not body bytes
-        const std::string_view input(buffer, sizeof(buffer) - parser.get().body().size);
+        const std::string_view input(buffer, len);
 
         auto result = feed(input);
         if (result.empty())
@@ -217,7 +286,7 @@ std::string brb::multipart::Parser::feed(std::string_view input) {
                 if (buffer.size() > keep) {
                     const auto n = buffer.size() - keep;
 
-                    part.body.append(buffer.data(), n);
+                    std::visit(BodyAppend{buffer.data(), n}, part.body);
                     buffer.erase(0, n);
                 }
 
@@ -241,7 +310,7 @@ std::string brb::multipart::Parser::feed(std::string_view input) {
 
                 if (buffer[suffix + 1] != '-') {
                     // Not a valid boundary. Continue searching.
-                    part.body.append(buffer.data(), pos + 1);
+                    std::visit(BodyAppend{buffer.data(), pos + 1}, part.body);
                     buffer.erase(0, pos + 1);
                     continue;
                 }
@@ -255,7 +324,7 @@ std::string brb::multipart::Parser::feed(std::string_view input) {
                     return {};
 
                 if (buffer[suffix + 1] != '\n') {
-                    part.body.append(buffer.data(), pos + 1);
+                    std::visit(BodyAppend{buffer.data(), pos + 1}, part.body);
                     buffer.erase(0, pos + 1);
                     continue;
                 }
@@ -263,7 +332,7 @@ std::string brb::multipart::Parser::feed(std::string_view input) {
                 suffix_size = 2;
             } else {
                 // Boundary-like text inside the actual body.
-                part.body.append(buffer.data(), pos + 1);
+                std::visit(BodyAppend{buffer.data(), pos + 1}, part.body);
                 buffer.erase(0, pos + 1);
                 continue;
             }
@@ -274,7 +343,7 @@ std::string brb::multipart::Parser::feed(std::string_view input) {
             if (body_size > 0 && buffer[body_size - 1] == '\r')
                 --body_size;
 
-            part.body.append(buffer.data(), body_size);
+            std::visit(BodyAppend{buffer.data(), body_size}, part.body);
 
             buffer.erase(0, suffix + suffix_size);
 
@@ -296,9 +365,9 @@ std::string brb::multipart::Parser::feed(std::string_view input) {
     }
 }
 
-
-std::string brb::multipart::Part::dump(const std::string &boundary) const {
+std::string brb::multipart::Part::dump(std::string_view boundary, bool more) const {
     std::string out;
+    out.reserve(size(boundary, more));
 
     // Boundary line
     out += "--";
@@ -316,20 +385,95 @@ std::string brb::multipart::Part::dump(const std::string &boundary) const {
     // Header/body separator
     out += "\r\n";
 
-    // Body
-    out += body;
+    std::visit(BodyRead{out}, body);
 
     // Separator before the next part
     out += "\r\n";
 
+    if (!more) {
+        out += "--";
+        out += boundary;
+        out += "--";
+        out += "\r\n";
+    }
+
     return out;
 }
 
-std::string brb::multipart::Part::dump_end(const std::string &boundary) {
-    std::string out;
-    out += "--";
-    out += boundary;
-    out += "--";
-    out += "\r\n";
-    return out;
+std::string brb::multipart::get_boundary(const fields &headers) {
+    auto [value, params, _] = brb::parse_options_header(headers[field::content_type]);
+
+    if (!value.starts_with("multipart/"))
+        return {};
+
+    return params["boundary"];
+}
+
+size_t brb::multipart::size_of(const std::vector<Part> &parts, std::string_view boundary) {
+    size_t ret  = 0;
+    bool   more = false;
+
+    for (size_t i = parts.size(); i > 0; ++i) {
+        ret += parts[i - 1].size(boundary, more);
+        more = true;
+    }
+
+    return ret;
+}
+
+auto brb::multipart::value(std::string_view type, std::string_view name, std::string value, std::string_view content_type)
+    -> Part {
+    std::string content_disposition = std::string(type);
+    if (!name.empty()) {
+        content_disposition += "; \"";
+        content_disposition += name;
+        content_disposition += '"';
+    }
+
+    Part part;
+    part.headers.set(field::content_disposition, content_disposition);
+    part.headers.set(field::content_type, content_type);
+    part.body = std::move(value);
+
+    return part;
+}
+
+auto brb::multipart::file(
+    std::string_view      type,
+    std::filesystem::path path,
+    std::string_view      name,
+    std::string_view      filename,
+    std::string_view      content_type
+) -> Part {
+    std::string fname = filename.empty() ? path.filename().string() : std::string(filename);
+    std::string content_disposition(type);
+
+    if (!name.empty()) {
+        content_disposition += "; name=\"";
+        content_disposition += name;
+        content_disposition += '"';
+    }
+
+    if (!fname.empty()) {
+        content_disposition += "; filename=\"";
+        content_disposition += fname;
+        content_disposition += '"';
+    }
+
+    std::string path_str = path.string();
+    std::string ext_str  = path.extension().string();
+
+    brb::file                 file;
+    boost::system::error_code ec;
+
+    file.open(path_str.c_str(), file_mode::scan, ec);
+    if (ec)
+        throw boost::system::system_error(ec);
+
+    Part part;
+    part.headers.set(field::content_disposition, content_disposition);
+    part.headers.set(field::content_type, content_type.empty() ? brb::mime_type(ext_str) : content_type);
+    part.body = std::move(file);
+
+    return part;
 }

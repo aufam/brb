@@ -8,7 +8,7 @@ name = "brb"
 [[bin]]
 name = "main"
 path = "src/main.cpp"
-required-features = ["cpx", "static_files", "gzip", "brotli", "zstd"]
+required-features = ["cpx", "static_files", "gzip", "brotli", "zstd", "multipart"]
 
 [[bin]]
 name = "test"

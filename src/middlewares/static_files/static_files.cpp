@@ -94,95 +94,6 @@ static MatchResult match_filepath(std::string_view root_uri, const std::string &
     return {};
 }
 
-static std::string_view mime_type(const std::string &path) {
-    const auto ext = std::filesystem::path(path).extension().string();
-
-    static const std::unordered_map<std::string_view, std::string_view> mime{
-        // Web
-        {".html",  "text/html"                                                                },
-        {".htm",   "text/html"                                                                },
-        {".css",   "text/css"                                                                 },
-        {".js",    "text/javascript"                                                          },
-        {".mjs",   "text/javascript"                                                          },
-        {".json",  "application/json"                                                         },
-        {".map",   "application/json"                                                         },
-        {".xml",   "application/xml"                                                          },
-        {".csv",   "text/csv"                                                                 },
-        {".txt",   "text/plain"                                                               },
-        {".md",    "text/markdown"                                                            },
-        {".toml",  "application/toml"                                                         },
-        {".yaml",  "application/yaml"                                                         },
-        {".yml",   "application/yaml"                                                         },
-
-        // Images
-        {".png",   "image/png"                                                                },
-        {".jpg",   "image/jpeg"                                                               },
-        {".jpeg",  "image/jpeg"                                                               },
-        {".gif",   "image/gif"                                                                },
-        {".webp",  "image/webp"                                                               },
-        {".avif",  "image/avif"                                                               },
-        {".svg",   "image/svg+xml"                                                            },
-        {".ico",   "image/vnd.microsoft.icon"                                                 },
-        {".bmp",   "image/bmp"                                                                },
-        {".tif",   "image/tiff"                                                               },
-        {".tiff",  "image/tiff"                                                               },
-
-        // Audio
-        {".mp3",   "audio/mpeg"                                                               },
-        {".wav",   "audio/wav"                                                                },
-        {".ogg",   "audio/ogg"                                                                },
-        {".oga",   "audio/ogg"                                                                },
-        {".opus",  "audio/opus"                                                               },
-        {".m4a",   "audio/mp4"                                                                },
-        {".aac",   "audio/aac"                                                                },
-        {".flac",  "audio/flac"                                                               },
-
-        // Video
-        {".mp4",   "video/mp4"                                                                },
-        {".webm",  "video/webm"                                                               },
-        {".ogv",   "video/ogg"                                                                },
-        {".mov",   "video/quicktime"                                                          },
-        {".m4v",   "video/mp4"                                                                },
-
-        // Fonts
-        {".woff",  "font/woff"                                                                },
-        {".woff2", "font/woff2"                                                               },
-        {".ttf",   "font/ttf"                                                                 },
-        {".otf",   "font/otf"                                                                 },
-
-        // Documents
-        {".pdf",   "application/pdf"                                                          },
-        {".rtf",   "application/rtf"                                                          },
-        {".doc",   "application/msword"                                                       },
-        {".docx",  "application/vnd.openxmlformats-officedocument.wordprocessingml.document"  },
-        {".xls",   "application/vnd.ms-excel"                                                 },
-        {".xlsx",  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"        },
-        {".ppt",   "application/vnd.ms-powerpoint"                                            },
-        {".pptx",  "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
-
-        // Archives / packages
-        {".zip",   "application/zip"                                                          },
-        {".gz",    "application/gzip"                                                         },
-        {".tar",   "application/x-tar"                                                        },
-        {".7z",    "application/x-7z-compressed"                                              },
-        {".rar",   "application/vnd.rar"                                                      },
-        {".bz2",   "application/x-bzip2"                                                      },
-        {".xz",    "application/x-xz"                                                         },
-        {".zst",   "application/zstd"                                                         },
-
-        // WebAssembly
-        {".wasm",  "application/wasm"                                                         },
-
-        // Binary
-        {".bin",   "application/octet-stream"                                                 },
-    };
-
-    if (auto it = mime.find(ext); it != mime.end())
-        return it->second;
-
-    return "application/octet-stream";
-}
-
 /// Convert a filesystem timestamp to system_clock.
 static std::chrono::system_clock::time_point to_system_clock(std::filesystem::file_time_type tp) {
     return std::chrono::time_point_cast<std::chrono::system_clock::duration>(
@@ -214,7 +125,7 @@ static std::string etag_file(std::string const &path) {
 auto brb::middlewares::static_files::operator()(Context &c) const -> awaitable<void> {
     auto &opts = *this;
 
-    if (c.req().method() != http::verb::get) {
+    if (c.req().method() != verb::get) {
         co_await c.next();
         co_return;
     }
@@ -248,15 +159,15 @@ auto brb::middlewares::static_files::operator()(Context &c) const -> awaitable<v
 
         auto &res  = c.response_string();
         res.body() = std::move(body);
-        res.set(http::field::content_type, "text/html; charset=utf-8");
-        res.result(http::status::ok);
+        res.set(field::content_type, "text/html; charset=utf-8");
+        res.result(status::ok);
 
         co_await c.write_response();
         co_return;
     }
 
     if (!cache_control.empty()) {
-        c.res().set(http::field::cache_control, cache_control);
+        c.res().set(field::cache_control, cache_control);
     }
 
     if (redirect) {
@@ -268,8 +179,8 @@ auto brb::middlewares::static_files::operator()(Context &c) const -> awaitable<v
             uri.set_encoded_query(query);
 
         auto &res = c.response_empty();
-        res.set(http::field::location, uri.buffer());
-        res.result(http::status::moved_permanently);
+        res.set(field::location, uri.buffer());
+        res.result(status::moved_permanently);
 
         co_await c.write_response();
         co_return;
@@ -278,12 +189,10 @@ auto brb::middlewares::static_files::operator()(Context &c) const -> awaitable<v
     std::string etag;
     if (opts.etag) {
         etag = etag_file(path);
-
-        const auto &req = c.req();
-        if (auto it = req.find(http::field::if_none_match); it != req.end() && it->value() == etag) {
+        if (c.req()[field::if_none_match] == etag) {
             auto &res = c.response_empty();
-            res.set(http::field::etag, etag);
-            res.result(http::status::not_modified);
+            res.set(field::etag, etag);
+            res.result(status::not_modified);
             co_await c.write_response();
             co_return;
         }
@@ -296,22 +205,17 @@ auto brb::middlewares::static_files::operator()(Context &c) const -> awaitable<v
 
         if (!ec) {
             const auto modified = std::chrono::time_point_cast<std::chrono::seconds>(to_system_clock(file_time));
+            last_modified       = date::format(modified);
 
-            last_modified = date::format(modified);
-
-            const auto &req = c.req();
-            if (auto it = req.find(http::field::if_modified_since); it != req.end()) {
-
-                auto since = date::parse(it->value());
+            if (auto val = c.req()[field::if_modified_since]; val != "") {
+                auto since = date::parse(val);
                 if (modified <= std::chrono::time_point_cast<std::chrono::seconds>(since)) {
-
                     auto &res = c.response_empty();
-
                     if (!etag.empty())
-                        res.set(http::field::etag, etag);
+                        res.set(field::etag, etag);
 
-                    res.set(http::field::last_modified, *last_modified);
-                    res.result(http::status::not_modified);
+                    res.set(field::last_modified, *last_modified);
+                    res.result(status::not_modified);
                     co_await c.write_response();
                     co_return;
                 }
@@ -322,13 +226,12 @@ auto brb::middlewares::static_files::operator()(Context &c) const -> awaitable<v
     auto &res = c.response_file(path);
 
     if (!etag.empty())
-        res.set(http::field::etag, etag);
+        res.set(field::etag, etag);
 
     if (last_modified)
-        res.set(http::field::last_modified, *last_modified);
+        res.set(field::last_modified, *last_modified);
 
-    res.set(http::field::content_type, mime_type(path));
-    res.result(http::status::ok);
-    res.prepare_payload();
+    res.set(field::content_type, mime_type(std::filesystem::path(path).extension().string()));
+    res.result(status::ok);
     co_await c.write_response();
 }

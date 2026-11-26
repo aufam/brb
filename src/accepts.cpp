@@ -32,28 +32,10 @@ bool brb::iequals(std::string_view a, std::string_view b) {
     return true;
 }
 
-static bool q_zero(std::string_view params) {
-    while (!params.empty()) {
-        const auto semi = params.find(';');
+static bool q_zero(const brb::ParsedOptionsHeader &parsed) {
+    auto it = parsed.params.find("q");
 
-        auto       param = brb::trim(params.substr(0, semi));
-        const auto eq    = param.find('=');
-
-        if (eq != std::string_view::npos) {
-            auto name  = brb::trim(param.substr(0, eq));
-            auto value = brb::trim(param.substr(eq + 1));
-
-            if (brb::iequals(name, "q") && !value.empty() && value.front() == '0')
-                return true;
-        }
-
-        if (semi == std::string_view::npos)
-            break;
-
-        params.remove_prefix(semi + 1);
-    }
-
-    return false;
+    return it != parsed.params.end() && (it->second == "0" || it->second.starts_with("0."));
 }
 
 static bool matches_media_type(std::string_view accepted, std::string_view requested) {
@@ -79,22 +61,15 @@ static bool matches_encoding(std::string_view accepted, std::string_view request
 template <typename Matcher>
 static bool accepts_header(std::string_view header, std::string_view requested, Matcher matcher) {
     while (!header.empty()) {
-        const auto comma = header.find(',');
+        auto parsed = brb::parse_options_header(header);
 
-        auto       item = brb::trim(header.substr(0, comma));
-        const auto semi = item.find(';');
-
-        auto value = brb::trim(item.substr(0, semi));
-
-        auto params = semi == std::string_view::npos ? std::string_view{} : item.substr(semi + 1);
-
-        if (!q_zero(params) && matcher(value, requested))
-            return true;
-
-        if (comma == std::string_view::npos)
+        if (parsed.value.empty() && parsed.next.empty())
             break;
 
-        header.remove_prefix(comma + 1);
+        if (!q_zero(parsed) && matcher(parsed.value, requested))
+            return true;
+
+        header = parsed.next;
     }
 
     return false;
@@ -102,18 +77,10 @@ static bool accepts_header(std::string_view header, std::string_view requested, 
 
 bool brb::Context::accepts(std::string_view media_type) const {
     const auto value = req()[brb::http::field::accept];
-
-    if (value.empty())
-        return false;
-
-    return accepts_header(value, media_type, matches_media_type);
+    return !value.empty() && accepts_header(value, media_type, matches_media_type);
 }
 
 bool brb::Context::accepts_encoding(std::string_view encoding) const {
     const auto value = req()[brb::http::field::accept_encoding];
-
-    if (value.empty())
-        return false;
-
-    return accepts_header(value, encoding, matches_encoding);
-};
+    return !value.empty() && accepts_header(value, encoding, matches_encoding);
+}

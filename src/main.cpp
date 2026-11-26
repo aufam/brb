@@ -4,6 +4,7 @@
 import brb;
 import brb.gzip;
 import brb.static_files;
+import brb.multipart;
 import fmt;
 import cpx;
 import cpx.cli11;
@@ -119,22 +120,24 @@ int main(int argc, char **argv) {
         co_await c.write_chunk(body, false);
     });
 
-    // engine.route(brb::http::verb::get, "/multipart", [](brb::Context &c) -> brb::awaitable<void> {
-    //     const std::string boundary = "boundary";
-    //     c.set_multipart_stream(boundary);
-    //     brb::Part part;
-    //
-    //     // hello
-    //     part.fields.set(brb::http::field::content_type, "text/plain");
-    //     part.body = "hello";
-    //     co_await c.write_chunk(part.dump(boundary), true);
-    //
-    //     // world
-    //     part.body = "world";
-    //     co_await c.write_chunk(part.dump(boundary), true);
-    //
-    //     co_await c.write_chunk(brb::Part::dump_end(boundary), false);
-    // });
+    engine.route(brb::http::verb::get, "/multipart", [](brb::Context &c) -> brb::awaitable<void> {
+        const std::string boundary = "boundary";
+        c.set_multipart_stream(boundary);
+        brb::multipart::Part part;
+
+        // hello
+        part.headers.set(brb::http::field::content_type, "text/plain; charset=utf-8");
+        part.body = "hello";
+        co_await part.write(boundary, c);
+
+        // world
+        part.body = "world";
+        co_await part.write(boundary, c);
+
+        part = brb::multipart::file("atachment", "README.md");
+        co_await part.write(boundary, c, false);
+    });
+
     //
     // engine.route(brb::http::verb::post, "/multipart", [](brb::Context &c) -> brb::awaitable<void> {
     //     while (true) {

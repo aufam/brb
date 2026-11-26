@@ -68,7 +68,7 @@ auto brb::Context::parser_file(const std::string filepath) -> request_parser<fil
 
         if (!filepath.empty()) {
             auto ec = beast::error_code();
-            fp->get().body().open(filepath.c_str(), beast::file_mode::write, ec);
+            fp->get().body().open(filepath.c_str(), file_mode::write, ec);
 
             if (ec)
                 throw std::runtime_error(ec.message());
@@ -83,7 +83,7 @@ auto brb::Context::parser_file(const std::string filepath) -> request_parser<fil
             return fp;
 
         auto ec = beast::error_code();
-        fp.get().body().open(filepath.c_str(), beast::file_mode::write, ec);
+        fp.get().body().open(filepath.c_str(), file_mode::write, ec);
 
         if (ec)
             throw std::runtime_error(ec.message());

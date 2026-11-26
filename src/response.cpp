@@ -60,7 +60,7 @@ auto brb::Context::response_file(const std::string &filepath) -> response<file_b
 
         if (!filepath.empty()) {
             auto ec = beast::error_code();
-            res.body().open(filepath.c_str(), beast::file_mode::scan, ec);
+            res.body().open(filepath.c_str(), file_mode::scan, ec);
 
             if (ec)
                 throw std::runtime_error(ec.message());
@@ -74,7 +74,7 @@ auto brb::Context::response_file(const std::string &filepath) -> response<file_b
             return *p;
 
         auto ec = beast::error_code();
-        p->body().open(filepath.c_str(), beast::file_mode::scan, ec);
+        p->body().open(filepath.c_str(), file_mode::scan, ec);
 
         if (ec)
             throw std::runtime_error(ec.message());
@@ -87,7 +87,7 @@ auto brb::Context::response_file(const std::string &filepath) -> response<file_b
     return std::get<response<file_body>>(r);
 }
 
-auto brb::Context::response_buffer() -> response<buffer_body> & {
+auto brb::Context::response_buffer() -> std::pair<response<buffer_body> &, response_serializer<buffer_body> &> {
     if (auto *p = std::get_if<response<empty_body>>(&r)) {
         r = response<buffer_body>(std::move(*p));
     } else if (std::get_if<response<string_body>>(&r)) {
@@ -95,8 +95,11 @@ auto brb::Context::response_buffer() -> response<buffer_body> & {
     } else if (std::get_if<response<file_body>>(&r)) {
         throw std::runtime_error("cannot convert file body to buffer body");
     } else if (auto *p = std::get_if<response<buffer_body>>(&r)) {
-        return *p;
+        if (!serializer)
+            serializer = std::make_unique<::brb::response_serializer<buffer_body>>(*p);
+
+        return {*p, *serializer};
     }
 
-    return std::get<response<buffer_body>>(r);
+    throw std::runtime_error("unknown response type");
 }
